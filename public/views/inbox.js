@@ -49,14 +49,14 @@ export default async function inbox(root, params, query) {
     const sentence = t('notif.' + n.kind, { who: n.actor_name || t('common.someone'), title: n.title || '' });
     const open = async (e) => {
       e.preventDefault();
-      if (unread) { try { await api.post(`/notifications/${n.id}/read`); n.read_at = new Date().toISOString(); refreshCount(); } catch { /* still navigate */ } }
+      if (unread) { try { await api.post(`/notifications/${n.id}/read`); n.read_at = new Date().toISOString(); replace(n); refreshCount(); } catch { /* still navigate */ } }
       if (n.url && n.url.startsWith('#/')) location.hash = n.url;
       else replace(n);
     };
     const act = (label, iconName, fn) => h('button', { class: 'btn ghost sm icon-only', 'aria-label': `${label}: ${sentence}`, title: label, onclick: async (e) => { e.stopPropagation(); try { await fn(); } catch (err) { showError(err); } } }, icon(iconName, 14));
     const li = h('li', { class: ['inbox-item', unread && 'unread'], dataset: { id: n.id } },
       h('span', { class: 'inbox-dot', 'aria-hidden': 'true' }),
-      avatar(n.actor_name || '', n.actor_id || 0),
+      n.actor_name ? avatar(n.actor_name, n.actor_id) : h('span', { class: 'avatar inbox-sys', 'aria-hidden': 'true' }, icon('bell', 12)),
       h('a', { class: 'inbox-main', href: n.url || '#/inbox', onclick: open },
         h('span', { class: 'sr-only' }, unread ? t('inbox.unread_label') + ': ' : ''),
         h('span', { class: 'inbox-sentence' }, sentence),

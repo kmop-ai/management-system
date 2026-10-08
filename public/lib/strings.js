@@ -866,7 +866,7 @@ export const STRINGS = {
   'audit.action': ['Action', 'Ενέργεια'],
   'audit.what': ['What happened', 'Τι έγινε'],
   'audit.system': ['System', 'Σύστημα'],
-  'audit.n_fields': ['{n} field(s)', '{n} πεδίο/α'],
+  'audit.n_fields': ['{n} field(s)', 'πεδία: {n}'],
   'audit.showing': ['Showing {n} of {total} entries', 'Εμφανίζονται {n} από {total} εγγραφές'],
   'audit.empty': ['Nothing has been recorded yet.', 'Δεν έχει καταγραφεί τίποτα ακόμη.'],
   'audit.no_match': ['No entries match these filters.', 'Καμία εγγραφή δεν ταιριάζει σε αυτά τα φίλτρα.'],

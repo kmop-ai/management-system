@@ -67,7 +67,7 @@ async function list(root) {
           h('td', { class: 'num hide-mobile' }, t('tpl.used_n', { n: x.used || 0 })),
           h('td', { class: 'small muted hide-mobile' }, x.created_by_name || '—'),
           h('td', { class: 'nowrap' }, h('div', { class: 'row gap-4' },
-            h('button', { class: 'btn sm primary', onclick: () => newProjectDialog({ template_id: x.id }) }, t('tpl.use')),
+            can('project_create', 2) ? h('button', { class: 'btn sm primary', onclick: () => newProjectDialog({ template_id: x.id }) }, t('tpl.use')) : null,
             h('a', { class: 'btn sm ghost', href: `#/templates/${x.id}` }, t('common.open'))))))))));
     } catch (e) { mount(projBox, h('div', { class: 'banner danger' }, e.message)); }
   }
@@ -257,7 +257,7 @@ async function detail(root, id, startEditing) {
         entityChip(tpl.entity_id),
         h('span', { class: 'sub' }, t('tpl.updated_ago', { when: timeAgo(tpl.updated_at) })),
         h('div', { class: 'right row wrap gap-4' },
-          h('button', { class: 'btn primary', onclick: () => newProjectDialog({ template_id: tpl.id, entity_id: tpl.entity_id || undefined }) }, icon('plus', 14), t('tpl.use_this')),
+          can('project_create', 2) ? h('button', { class: 'btn primary', onclick: () => newProjectDialog({ template_id: tpl.id, entity_id: tpl.entity_id || undefined }) }, icon('plus', 14), t('tpl.use_this')) : null,
           tpl.can_edit && !editing ? h('button', { class: 'btn', onclick: () => { editing = true; render(); } }, t('common.edit')) : null,
           tpl.can_edit ? h('button', { class: 'btn danger icon-only', 'aria-label': t('tpl.delete_template'), title: t('tpl.delete_template'), onclick: async () => {
             if (!await confirmDialog(t('tpl.delete_confirm', { name: tpl.name }))) return;

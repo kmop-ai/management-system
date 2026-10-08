@@ -34,7 +34,7 @@ async function list(ctx) {
   const { total, rows } = await paged(ctx.env.DB, {
     select: `u.id, u.email, u.name, u.title, u.entity_id, u.department_id, u.is_external, u.external_org, u.active, u.weekly_hours,
              u.work_days, u.last_login_at, u.updated_at, e.code AS entity_code, d.name AS department_name,
-             (SELECT group_concat(ur.role) FROM user_roles ur WHERE ur.user_id = u.id AND ur.revoked_at IS NULL
+             (SELECT group_concat(DISTINCT ur.role) FROM user_roles ur WHERE ur.user_id = u.id AND ur.revoked_at IS NULL
                 AND (ur.valid_until IS NULL OR ur.valid_until >= date('now'))) AS roles`,
     from: `users u LEFT JOIN entities e ON e.id = u.entity_id LEFT JOIN departments d ON d.id = u.department_id`,
     where, params, order: sortClause(url, SORTABLE, 'name'), ...pg,
@@ -87,6 +87,12 @@ async function invite(ctx) {
   if (await first(ctx.env.DB, `SELECT id FROM users WHERE email = ?`, v.email)) throw conflict('Someone with this email already exists');
   const role = v.role || (v.is_external ? 'external_partner' : 'team_member');
   delete v.role;
+  // Same rules as granting a role later: it must exist, not outrank the
+  // granter, and roles that must expire cannot be given at invitation.
+  const roleRow = await first(ctx.env.DB, `SELECT * FROM roles WHERE key = ?`, role);
+  if (!roleRow) throw badRequest('Unknown role');
+  if (roleRow.rank > ctx.access.maxRank) throw forbidden('You cannot grant a role above your own');
+  if (roleRow.requires_expiry) throw badRequest(`${roleRow.label_en} access must have an end date: add the person first, then grant the role with valid_until`);
   const id = await insert(ctx.env.DB, 'users', v);
   await insert(ctx.env.DB, 'user_roles', { user_id: id, role, granted_by: ctx.user.id });
   ctx.audit({ action: 'create', type: 'user', id, label: v.name, entity_id: v.entity_id,

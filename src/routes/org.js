@@ -2,7 +2,7 @@
 // access matrix, settings. Read by everyone (the shell needs labels), written
 // only with the admin module.
 
-import { ok, created, readJson, Validator, notFound, forbidden, badRequest, intParam, param } from '../lib/http.js';
+import { ok, created, readJson, Validator, notFound, forbidden, badRequest, conflict, intParam, param } from '../lib/http.js';
 import { first, all, insert, update, run, nowIso, stmt, expectedVersion } from '../lib/db.js';
 import { WRITE, ADMIN } from '../lib/rbac.js';
 import { diff, describeChanges } from '../lib/audit.js';
@@ -141,7 +141,7 @@ async function deleteDepartment(ctx, { id }) {
 async function listRoles(ctx) {
   const db = ctx.env.DB;
   const [roles, modules, matrix] = await db.batch([
-    db.prepare(`SELECT r.*, (SELECT COUNT(*) FROM user_roles ur WHERE ur.role = r.key AND ur.revoked_at IS NULL) AS holders FROM roles r ORDER BY rank DESC`),
+    db.prepare(`SELECT r.*, (SELECT COUNT(DISTINCT ur.user_id) FROM user_roles ur JOIN users u ON u.id = ur.user_id WHERE ur.role = r.key AND ur.revoked_at IS NULL AND u.deleted_at IS NULL AND (ur.valid_until IS NULL OR ur.valid_until >= date('now'))) AS holders FROM roles r ORDER BY rank DESC`),
     db.prepare(`SELECT * FROM modules`),
     db.prepare(`SELECT * FROM role_module_access`),
   ]);
@@ -197,7 +197,10 @@ async function patchSetting(ctx, { key }) {
   needAdmin(ctx, undefined, ADMIN);
   const s = await first(ctx.env.DB, `SELECT * FROM settings WHERE key = ?`, key);
   if (!s) throw notFound('Setting not found');
-  const { value } = new Validator(await readJson(ctx.req)).string('value', { required: true, max: 500 }).done();
+  const body = await readJson(ctx.req);
+  const { value } = new Validator(body).string('value', { required: true, max: 500 }).done();
+  const expected = expectedVersion(ctx.req, body);
+  if (expected && expected !== s.updated_at) throw conflict('This setting was changed by someone else. Reload to see the new value.', { current_updated_at: s.updated_at });
   if (value !== s.value) {
     await run(ctx.env.DB, `UPDATE settings SET value = ?, updated_at = ?, updated_by = ? WHERE key = ?`, value, nowIso(), ctx.user.id, key);
     ctx.audit({ action: 'update', type: 'setting', label: key, summary: `${ctx.user.name} changed the setting ${key} from "${s.value}" to "${value}"`, changes: { value: [s.value, value] } });

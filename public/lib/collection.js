@@ -83,7 +83,9 @@ export function taskCollection(root, {
       const body = { ...fields };
       if (project) body.project_id = project.id;
       if (!project && base.assignee === 'me' && body.assignee_id === undefined) body.assignee_id = state.me.id;
-      try { const n = await api.post('/tasks', body); await load(); return n; } catch (e) { showError(e); throw e; }
+      const n = await api.post('/tasks', body); // callers show the error
+      await load();
+      return n;
     },
   });
 
@@ -135,7 +137,7 @@ export function taskCollection(root, {
       c.activeViewId ? (c.savedViews.find(v => v.id === c.activeViewId)?.name || t('common.views')) : t('common.views'));
 
     const switcher = views.length > 1 ? h('div', { class: 'seg', role: 'tablist', 'aria-label': t('coll.layout') }, views.map(v => h('button', { class: 'btn sm', role: 'tab', 'aria-selected': String(c.view === v), 'aria-pressed': String(c.view === v), title: t('coll.view_' + v),
-      onclick: () => { c.view = v; persist(); renderBar(); renderBody(); } }, icon(VIEW_ICONS[v], 14), h('span', { class: 'hide-mobile' }, t('coll.view_' + v))))) : null;
+      onclick: () => { c.view = v; persist(); renderBar(); load(); } }, icon(VIEW_ICONS[v], 14), h('span', { class: 'hide-mobile' }, t('coll.view_' + v))))) : null;
 
     mount(bar, switcher, h('span', { class: 'sep' }), q, stateBtn, assigneeBtn, dueBtn, prioBtn, labelBtn, groupBtn, clear, h('span', { class: 'right' }), viewsBtn);
   }

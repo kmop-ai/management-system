@@ -27,6 +27,11 @@ export default async function person(root, params) {
   const d = deptById(u.department_id);
   const canEditCapacity = u.can_edit || self;
   const canEditLeave = u.can_edit || self;
+  // Guests see co-members of shared projects only as names: no capacity,
+  // leave or workload of staff.
+  const limited = state.me.is_external && !self;
+  const cleanups = [];
+  const staffCards = !u.is_external && !limited;
 
   const managerSlot = h('span');
   const cards = h('div', { class: 'person-grid' });
@@ -42,7 +47,7 @@ export default async function person(root, params) {
           e ? h('span', { class: 'chip', title: e.name, style: { background: (e.color || '#888') + '22', color: e.color } }, e.code) : null,
           e ? h('span', { class: 'hide-mobile' }, e.name) : null,
           d ? h('span', null, '· ', deptName(d)) : null,
-          u.is_external ? h('span', { class: 'chip warn' }, t('common.external'), u.external_org ? ` · ${u.external_org}` : '') : null,
+          u.is_external ? h('span', { class: 'chip warn', title: u.external_org || '' }, t('common.external'), u.external_org ? ` · ${u.external_org}` : '') : null,
           !u.active ? h('span', { class: 'chip danger' }, t('people.inactive')) : null),
         h('div', { class: 'row wrap gap-12 small' },
           u.email ? h('a', { href: `mailto:${u.email}` }, icon('comment', 12), ' ', u.email) : null,
@@ -51,26 +56,30 @@ export default async function person(root, params) {
       self ? h('a', { class: 'btn right', href: '#/settings' }, icon('gear', 14), t('nav.settings')) : null),
     cards, wide));
 
-  if (u.manager_id) {
+  if (u.manager_id && !limited) {
     api.get(`/users/${u.manager_id}`).then(m => mount(managerSlot, h('span', { class: 'muted' }, t('person.manager'), ': '), h('a', { href: `#/people/${m.id}` }, m.name)))
       .catch(() => {});
   }
 
   // Cards: each loads on its own so one forbidden call never blanks the page.
   cards.append(projectsCard(u));
-  if (!u.is_external) cards.append(capacityCard(u, canEditCapacity));
-  const allocSlot = h('div', { class: 'card' });
-  const leaveSlot = h('div', { class: 'card' });
-  if (!u.is_external) cards.append(allocSlot, leaveSlot);
-  if (!u.is_external) allocationsCard(allocSlot, u);
-  if (!u.is_external) leaveCard(leaveSlot, u, canEditLeave);
+  if (staffCards) {
+    cards.append(capacityCard(u, canEditCapacity));
+    const allocSlot = h('div', { class: 'card' });
+    const leaveSlot = h('div', { class: 'card' });
+    cards.append(allocSlot, leaveSlot);
+    allocationsCard(allocSlot, u);
+    leaveCard(leaveSlot, u, canEditLeave);
 
-  if (!u.is_external) {
     const wl = h('div');
-    wide.append(h('section', { class: 'card pad', 'aria-labelledby': 'pp-wl' },
+    const section = h('section', { class: 'card pad', 'aria-labelledby': 'pp-wl' },
       h('div', { class: 'row mb-8' }, h('h2', { id: 'pp-wl' }, t('person.workload_title')), h('a', { class: 'right small', href: '#/workload' }, t('person.full_workload'))),
-      wl));
+      wl);
+    wide.append(section);
+    // The server only returns workload for people your access covers; if
+    // this person is not among them, the section goes rather than sit empty.
     import('./workload.js').then(({ workloadGrid }) => workloadGrid(wl, { user_ids: String(u.id), weeks: 4, controls: false, explain: false }))
+      .then((c) => { if (typeof c === 'function') cleanups.push(c); if (!wl.querySelector('.wl') && !wl.querySelector('.banner')) section.remove(); })
       .catch(err => mount(wl, h('div', { class: 'banner danger' }, err.message)));
   }
 
@@ -82,6 +91,7 @@ export default async function person(root, params) {
 
   if (can('admin', 2)) wide.append(accessSection(u, self));
   if (self || can('admin', 2)) wide.append(personalDataSection(u, self));
+  return () => cleanups.forEach(c => c());
 }
 
 // ---- personal data (GDPR): export for the person or admins; erasure for super admins ----
@@ -250,7 +260,7 @@ async function metricsCard(el, u, self) {
   const rolesList = (m.visible_to?.roles || []).map(r => (state.locale === 'el' ? r.label_el : r.label_en)).filter(Boolean);
   const selfSees = !!m.visible_to?.self;
   mount(el, h('section', { class: 'card', 'aria-labelledby': 'pp-metrics' },
-    h('div', { class: 'card-head' }, h('h2', { id: 'pp-metrics' }, t('metric.title')), h('span', { class: 'muted small' }, t('metric.window', { n: m.window_days })),
+    h('div', { class: 'card-head', style: { flexWrap: 'wrap' } }, h('h2', { id: 'pp-metrics' }, t('metric.title')), h('span', { class: 'muted small' }, t('metric.window', { n: m.window_days })),
       h('span', { class: 'chip outline right', title: t('metric.restricted_hint') }, icon('lock', 11), t('metric.restricted'))),
     h('div', { class: 'card-body' },
       h('div', { class: 'metrics-grid' }, METRICS().map(([k, label]) => h('div', { class: 'stat' },

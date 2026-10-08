@@ -6,7 +6,7 @@
 
 import { h, mount, icon } from '../lib/dom.js';
 import { t } from '../lib/state.js';
-import { avatar, prioIcon, dueBadge, labelChip, emptyState, openMenu } from '../lib/ui.js';
+import { avatar, prioIcon, dueBadge, labelChip, emptyState, openMenu, showError } from '../lib/ui.js';
 import { groupTasks } from '../lib/collection.js';
 
 const BOARD_GROUPS = ['section', 'status', 'assignee', 'priority'];
@@ -14,7 +14,9 @@ const BOARD_GROUPS = ['section', 'status', 'assignee', 'priority'];
 export default function renderBoard(el, c) {
   const group = BOARD_GROUPS.includes(c.group) && !(c.group === 'section' && !c.project) ? c.group : 'status';
   const canWork = !c.project || c.project.access?.work;
-  const columns = groupTasks(c.tasks, group, { project: c.project });
+  // A project board shows top-level tasks (subtasks live on their parent's card).
+  const tasks = c.project ? c.tasks.filter(x => !x.parent_id) : c.tasks;
+  const columns = groupTasks(tasks, group, { project: c.project });
   for (const col of columns) col.tasks = sortCards(col.tasks);
   const board = h('div', { class: 'board', role: 'region', 'aria-label': t('coll.view_board') });
   let drag = null;           // { task, from: column }
@@ -186,7 +188,7 @@ export default function renderBoard(el, c) {
       try {
         await c.createTask(fields);
         requestAnimationFrame(() => [...document.querySelectorAll('.bcol-add input')].find(x => x.getAttribute('aria-label') === label)?.focus());
-      } catch { input.value = fields.title; } finally { input.disabled = false; }
+      } catch (err) { showError(err); input.value = fields.title; } finally { input.disabled = false; }
     });
     return h('div', { class: 'bcol-add' }, icon('plus', 13, 'muted'), input);
   }

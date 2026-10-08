@@ -201,7 +201,7 @@ table.table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
 .status-pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--c, var(--text-3)); }
 .avatar { width: 22px; height: 22px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 10px; font-weight: 700; color: #fff; flex: none; letter-spacing: .2px; }
 .avatar.lg { width: 40px; height: 40px; font-size: 15px; }
-.avatar.empty { background: transparent; border: 1px dashed var(--border-strong); color: var(--text-3); }
+.avatar.empty { padding: 0; background: transparent; border: 1px dashed var(--border-strong); color: var(--text-3); }
 .prio { display: inline-flex; width: 14px; justify-content: center; }
 .prio.urgent { color: var(--danger); } .prio.high { color: #d9480f; } .prio.medium { color: var(--warn); } .prio.low { color: var(--text-3); }
 .due { font-size: var(--fs-xs); white-space: nowrap; color: var(--text-2); font-variant-numeric: tabular-nums; }
@@ -392,6 +392,7 @@ mark { background: #fde68a; color: inherit; border-radius: 2px; padding: 0 1px; 
 .bcol-add { display: flex; align-items: center; gap: 6px; padding: 4px 8px 8px 10px; }
 .bcol-add input { flex: 1; min-width: 0; }
 .bcol-head .avatar { width: 18px; height: 18px; font-size: 9px; }
+.bcard .avatar.empty, .bcol-head .avatar.empty { padding: 0; } /* .empty (empty state) collides with avatar.empty */
 @media (max-width: 860px) {
   .board { scroll-snap-type: x proximity; }
   .bcol { flex-basis: min(280px, calc(100vw - 48px)); scroll-snap-align: start; max-height: none; }
@@ -471,6 +472,9 @@ mark { background: #fde68a; color: inherit; border-radius: 2px; padding: 0 1px; 
   .cal-dh { justify-content: center; }
   .cal-add { display: none; }
   .cal-evx { font-size: 0; min-height: 5px; height: 5px; padding: 0; border-radius: 3px; }
+  .cal-evx, .cal-evx.overdue, .cal-evx.done { background: var(--accent); text-decoration: none; }
+  .cal-evx.overdue { background: var(--danger); }
+  .cal-evx.done { background: var(--text-3); }
   .cal-evx.proj { padding-left: 0; box-shadow: none; }
   .cal-evx .icon { display: none; }
   .cal-more { font-size: 10px; padding: 0; text-align: center; }
@@ -488,7 +492,7 @@ mark { background: #fde68a; color: inherit; border-radius: 2px; padding: 0 1px; 
 .adm-matrix th, .adm-matrix td { padding: 6px 6px; }
 .adm-matrix thead th { white-space: normal; vertical-align: bottom; min-width: 100px; text-transform: none; letter-spacing: 0; font-size: 11.5px; line-height: 1.25; }
 .adm-matrix .adm-modhead { display: inline-flex; gap: 3px; align-items: flex-start; }
-.adm-matrix .adm-rolecell { position: sticky; left: 0; z-index: 2; background: var(--surface); min-width: 200px; max-width: 240px; text-align: left; font-weight: 400; color: var(--text); text-transform: none; letter-spacing: 0; font-size: var(--fs-sm); border-right: 1px solid var(--border); }
+.adm-matrix .adm-rolecell { white-space: normal; position: sticky; left: 0; z-index: 2; background: var(--surface); min-width: 200px; max-width: 240px; text-align: left; font-weight: 400; color: var(--text); text-transform: none; letter-spacing: 0; font-size: var(--fs-sm); border-right: 1px solid var(--border); }
 .adm-matrix thead .adm-rolecell { background: var(--surface-2); z-index: 3; color: var(--text-3); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .4px; font-weight: 600; }
 .adm-matrix tbody tr:hover .adm-rolecell { background: var(--row-hover); }
 .adm-roledesc { white-space: normal; line-height: 1.35; }
@@ -531,20 +535,32 @@ mark { background: #fde68a; color: inherit; border-radius: 2px; padding: 0 1px; 
 .audit-mobile-meta { display: none; }
 .audit-project { display: inline-block; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 .audit-detail > td { background: var(--surface-2); padding: 10px 14px 14px 40px; }
-.audit-detail-body { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.audit-detail-body { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; min-width: 0; }
 .audit-meta { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 14px; margin: 0; font-size: var(--fs-xs); }
 .audit-meta dt { color: var(--text-3); }
 .audit-meta dd { margin: 0; overflow-wrap: anywhere; }
-table.audit-diff { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); max-width: 900px; }
-.audit-diff th[scope="row"] { color: var(--text-2); width: 1%; white-space: nowrap; font-weight: 600; }
+table.audit-diff { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); width: auto; min-width: min(420px, 100%); max-width: 100%; }
+.audit-diff td.audit-before, .audit-diff td.audit-after { min-width: 80px; }
+.audit-diff th[scope="row"] { color: var(--text-2); white-space: nowrap; font-weight: 600; text-transform: none; letter-spacing: 0; font-size: var(--fs-xs); background: transparent; position: static; vertical-align: top; }
 .audit-diff td { vertical-align: top; }
 .audit-before .audit-val { color: var(--danger); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--danger) 45%, transparent); }
 .audit-after .audit-val { color: var(--ok); }
 .audit-val { overflow-wrap: anywhere; white-space: pre-wrap; }
 @media (max-width: 860px) {
   .audit-mobile-meta { display: block; margin-top: 2px; }
-  .audit-summary { min-width: 180px; }
-  .audit-detail > td { padding-left: 12px; }
+  .audit-table, .audit-table tbody { display: block; }
+  .audit-table thead { display: none; }
+  .audit-row { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; grid-template-areas: "tog who act" "tog sum sum" "tog when when"; border-bottom: 1px solid var(--border); }
+  .audit-row > td { border-bottom: 0; padding: 3px 8px; min-width: 0; }
+  .audit-row > .audit-toggle { grid-area: tog; padding-top: 6px; }
+  .audit-row > .audit-who { grid-area: who; padding-top: 8px; }
+  .audit-row > .audit-act { grid-area: act; padding-top: 8px; }
+  .audit-row > .audit-summary { grid-area: sum; min-width: 0; }
+  .audit-row > .audit-when { grid-area: when; padding-bottom: 8px; display: flex; gap: 6px; white-space: normal; }
+  .audit-row > .hide-mobile { display: none; }
+  .audit-detail { display: block; border-bottom: 1px solid var(--border); }
+  .audit-detail > td { display: block; padding: 10px 12px 12px; border-bottom: 0; }
+  .audit-detail table.audit-diff { display: table; }
   .adm-matrix .adm-rolecell { min-width: 140px; max-width: 160px; }
   .adm-roledesc { display: none; }
 }
@@ -609,11 +625,13 @@ button.wl-cell .v { white-space: nowrap; }
 @media (max-width: 860px) { .people-table .show-mobile { display: block; } }
 .person-head h1 { overflow-wrap: anywhere; }
 .person-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; align-items: start; }
-@media (max-width: 400px) { .person-grid { grid-template-columns: 1fr; } }
+.person-grid > * { min-width: 0; }
+@media (max-width: 400px) { .person-grid { grid-template-columns: minmax(0, 1fr); } }
 .plain-list { list-style: none; margin: 0; padding: 4px 0; }
 .plain-list li { padding: 6px 14px; border-bottom: 1px solid var(--border); font-size: var(--fs-sm); min-width: 0; }
 .plain-list li:last-child { border-bottom: 0; }
 .plain-list .chip { flex: none; }
+@media (max-width: 600px) { .plain-list li.row { flex-wrap: wrap; } }
 .card.pad .plain-list li { padding-left: 0; padding-right: 0; }
 .plain-fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 .plain-fieldset legend { padding: 0; margin-bottom: 6px; }
@@ -628,7 +646,8 @@ dl.kv dd { margin: 0; min-width: 0; }
 .inbox-item { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--border); position: relative; }
 .inbox-item:last-child { border-bottom: 0; }
 .inbox-item:hover, .inbox-item:focus-within { background: var(--row-hover); }
-.inbox-item .avatar { margin-top: 1px; }
+.inbox-item .avatar { margin-top: 1px; height: 22px; }
+.inbox-sys { background: var(--surface-3); color: var(--text-2); }
 .inbox-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; margin-top: 8px; background: transparent; }
 .inbox-item.unread .inbox-dot { background: var(--accent); }
 .inbox-item.unread { background: var(--accent-soft); }

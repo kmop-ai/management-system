@@ -161,7 +161,7 @@ export default function renderList(el, c) {
           const again = [...el.querySelectorAll('.add-row input')].find(x => x.getAttribute('aria-label') === input.getAttribute('aria-label'));
           again?.focus();
         });
-      } catch {}
+      } catch (err) { showError(err); input.value = fields.title; }
     });
     return h('div', { class: 'add-row' }, icon('plus', 14, 'muted'), input);
   }

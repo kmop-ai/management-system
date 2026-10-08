@@ -16,7 +16,7 @@ export default async function search(root, params, query) {
   const input = h('input', { class: 'input search-input', id: 'search-q', type: 'search', value: q, placeholder: t('search.page_placeholder'), autocomplete: 'off' });
   const results = h('div', { 'aria-live': 'polite' });
   mount(root, h('div', { class: 'page' },
-    h('div', { class: 'page-head' }, h('h1', null, q ? t('search.results_for', { q }) : t('nav.search'))),
+    h('div', { class: 'page-head' }, h('h1', null, q.length >= 2 ? t('search.results_for', { q }) : t('nav.search'))),
     h('form', { class: 'row mb-16', role: 'search', onsubmit: (e) => {
       e.preventDefault();
       const v = input.value.trim();

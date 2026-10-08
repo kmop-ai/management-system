@@ -5,7 +5,7 @@
 
 import { h, mount, icon, debounce } from '../lib/dom.js';
 import { api, listAll } from '../lib/api.js';
-import { state, t, can, entityById, projectRole } from '../lib/state.js';
+import { state, t, can, entityById, projectRole, moduleLabel } from '../lib/state.js';
 import { avatar, fmtDateTime, timeAgo, emptyState, spinner, errorText } from '../lib/ui.js';
 
 const ACTIONS = ['create', 'update', 'delete', 'restore', 'grant', 'revoke', 'login', 'export', 'purge', 'anonymise'];
@@ -142,13 +142,13 @@ function auditRows(a) {
   const row = h('tr', { class: 'audit-row', tabindex: 0, onclick: (ev) => { if (!ev.target.closest('a,button')) toggle(); },
     onkeydown: (ev) => { if ((ev.key === 'Enter' || ev.key === ' ') && ev.target === row) { ev.preventDefault(); toggle(); } } },
     h('td', { class: 'audit-toggle' }, toggleBtn),
-    h('td', { class: 'nowrap small' }, h('div', null, fmtDateTime(a.at)), h('div', { class: 'muted xs' }, timeAgo(a.at))),
-    h('td', { class: 'small' }, a.actor_id
+    h('td', { class: 'nowrap small audit-when' }, h('div', null, fmtDateTime(a.at)), h('div', { class: 'muted xs' }, timeAgo(a.at))),
+    h('td', { class: 'small audit-who' }, a.actor_id
       ? h('span', { class: 'row gap-4 nowrap' }, avatar(a.actor_name, a.actor_id), h('a', { href: `#/people/${a.actor_id}` }, a.actor_name || t('common.someone')))
       : h('span', { class: 'row gap-4 muted nowrap' }, h('span', { class: 'avatar empty' }, icon('gear', 12)), t('audit.system'))),
-    h('td', null, h('span', { class: ['chip', ACTION_CLASS[a.action]] }, actionLabel(a.action))),
+    h('td', { class: 'audit-act' }, h('span', { class: ['chip', ACTION_CLASS[a.action]] }, actionLabel(a.action))),
     h('td', { class: 'audit-summary' }, a.summary,
-      hasChanges ? h('span', { class: 'muted xs' }, ' · ', t('audit.n_fields', { n: Object.keys(a.changes).length })) : null,
+      hasChanges ? h('span', { class: 'muted xs nowrap' }, ' · ', t('audit.n_fields', { n: Object.keys(a.changes).length })) : null,
       h('div', { class: 'muted xs audit-mobile-meta' }, [e?.code, a.project_name].filter(Boolean).join(' · '))),
     h('td', { class: 'hide-mobile' }, e ? h('span', { class: 'chip', title: e.name, style: { background: (e.color || '#888') + '22', color: e.color } }, e.code) : a.entity_code ? h('span', { class: 'chip' }, a.entity_code) : h('span', { class: 'muted' }, '—')),
     h('td', { class: 'small hide-mobile' }, a.project_id ? h('a', { href: `#/projects/${a.project_id}`, class: 'audit-project' }, a.project_name || '#' + a.project_id) : h('span', { class: 'muted' }, '—')));
@@ -169,7 +169,11 @@ function detailBody(a, hasChanges) {
       h('thead', null, h('tr', null, h('th', { scope: 'col' }, t('audit.field')), h('th', { scope: 'col' }, t('audit.before')), h('th', { scope: 'col', 'aria-hidden': 'true' }), h('th', { scope: 'col' }, t('audit.after')))),
       h('tbody', null, Object.entries(a.changes).map(([field, pair]) => {
         const [before, after] = Array.isArray(pair) && pair.length === 2 ? pair : [undefined, pair];
-        return h('tr', null, h('th', { scope: 'row', class: 'mono' }, field), h('td', { class: 'audit-before' }, val(before)), h('td', { class: 'muted', 'aria-hidden': 'true' }, '→'), h('td', { class: 'audit-after' }, val(after)));
+        // Role matrix changes store levels as numbers: show them as None / Read / Write / Admin.
+        const lvl = a.object_type === 'role' && [before, after].every(x => Number.isInteger(x) && x >= 0 && x <= 3);
+        const LV = [t('common.level_0'), t('common.level_1'), t('common.level_2'), t('common.level_3')];
+        return h('tr', null, h('th', { scope: 'row', class: 'mono' }, lvl ? moduleLabel(field) : field),
+          h('td', { class: 'audit-before' }, val(lvl ? LV[before] : before)), h('td', { class: 'muted', 'aria-hidden': 'true' }, '→'), h('td', { class: 'audit-after' }, val(lvl ? LV[after] : after)));
       }))));
 }
 

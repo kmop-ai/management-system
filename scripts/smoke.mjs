@@ -103,6 +103,8 @@ const mEmail = `smoke-member-${stamp}@kmop.org`, gEmail = `smoke-guest-${stamp}@
 const member = (await S.post('/users', { email: mEmail, name: `Smoke Member ${stamp}`, entity_id: 1, department_id: 2, weekly_hours: 40 })).data;
 const guest = (await S.post('/users', { email: gEmail, name: `Smoke Guest ${stamp}`, is_external: true, external_org: 'Partner NGO' })).data;
 await S.post('/users', { email: mEmail, name: 'dup' }, { expect: 409 });
+await S.post('/users', { email: `aud-${stamp}@kmop.org`, name: 'Auditor', role: 'auditor' }, { expect: 400 });
+await S.post('/users', { email: `bad-${stamp}@kmop.org`, name: 'Bad', role: 'nope' }, { expect: 400 });
 await S.get('/users?q=Smoke');
 const mu = await S.get(`/users/${member.id}`);
 await S.patch(`/users/${member.id}`, { title: 'Project Officer' }, { version: mu.data.updated_at });

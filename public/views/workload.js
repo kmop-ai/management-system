@@ -39,14 +39,14 @@ const isAway = (w) => w.capacity === 0 && w.leave > 0;
 export default async function workloadPage(root, params, query) {
   const saved = local.get('workload.filters', {});
   const f = {
-    scope: saved.scope || (can('people', 1) ? 'all' : 'me'),
+    scope: saved.scope || (state.me.is_external ? 'project' : can('people', 1) ? 'all' : 'me'),
     department_id: saved.department_id || state.me.department_id || state.departments[0]?.id || '',
     entity_id: saved.entity_id || state.me.entity_id || state.entities[0]?.id || '',
     project_id: saved.project_id || '',
     weeks: WEEK_OPTIONS.includes(saved.weeks) ? saved.weeks : 8,
     from: query.from && /^\d{4}-\d{2}-\d{2}$/.test(query.from) ? mondayOf(query.from) : mondayOf(todayStr()),
   };
-  if (state.me.is_external && f.scope !== 'project') f.scope = 'me';
+  if (state.me.is_external && !['project', 'me'].includes(f.scope)) f.scope = 'project';
 
   let projects = [];
   try { projects = (await api.list('/projects', { member: 'me', limit: 200, sort: 'name' })).data; } catch { /* the project scope just stays empty */ }
