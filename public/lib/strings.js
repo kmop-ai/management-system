@@ -515,6 +515,7 @@ export const STRINGS = {
   'people.last_login': ['Last sign-in', 'Τελευταία σύνδεση'],
   'people.never': ['Never', 'Ποτέ'],
   'people.inactive': ['Inactive', 'Ανενεργός'],
+  'people.show_inactive': ['Show inactive', 'Εμφάνιση ανενεργών'],
   'people.job_title': ['Job title', 'Θέση'],
   'people.entity_hint': ['The legal entity that employs them', 'Ο νομικός φορέας που τους απασχολεί'],
   'people.role_default': ['Default (team member, or external partner)', 'Προεπιλογή (μέλος ομάδας ή εξωτερικός συνεργάτης)'],

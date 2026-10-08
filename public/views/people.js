@@ -34,12 +34,13 @@ export default async function people(root) {
       h('option', { value: '' }, t('people.all_departments')),
       state.departments.map(d => h('option', { value: d.id, selected: String(f.dept) === String(d.id) }, deptName(d)))),
     h('select', { class: 'input sm', 'aria-label': t('people.who'), onchange: (e) => { f.external = e.target.value; save(); } },
-      [['', t('people.staff_and_external')], ['0', t('people.staff_only')], ['1', t('people.external_only')]].map(([v, l]) => h('option', { value: v, selected: f.external === v }, l))));
+      [['', t('people.staff_and_external')], ['0', t('people.staff_only')], ['1', t('people.external_only')]].map(([v, l]) => h('option', { value: v, selected: f.external === v }, l))),
+    can('admin', 2) ? h('label', { class: 'checkbox small right' }, h('input', { type: 'checkbox', checked: !!f.inactive, onchange: (e) => { f.inactive = e.target.checked; save(); } }), t('people.show_inactive')) : null);
 
   async function load() {
     mount(table, spinner());
     try {
-      const r = await api.list('/users', { q: f.q || null, entity_id: f.entity || null, department_id: f.dept || null, external: f.external || null, limit: 500, sort: f.sort || 'name' });
+      const r = await api.list('/users', { q: f.q || null, entity_id: f.entity || null, department_id: f.dept || null, external: f.external || null, active: f.inactive && can('admin', 2) ? 'all' : null, limit: 500, sort: f.sort || 'name' });
       if (!r.data.length) { mount(table, h('div', { class: 'card' }, emptyState(t('people.none'), 'people'))); return; }
       const sortTh = (k, l, cls) => h('th', { scope: 'col', class: cls, 'aria-sort': f.sort === k ? 'ascending' : f.sort === '-' + k ? 'descending' : null },
         k ? h('button', { class: 'sort', onclick: () => { f.sort = f.sort === k ? '-' + k : k; save(); } }, l, f.sort === k ? ' ↑' : f.sort === '-' + k ? ' ↓' : '') : l);
