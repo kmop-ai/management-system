@@ -21,7 +21,7 @@ export default async function projectView(root, params) {
   const total = p.start_date && p.end_date ? projectMonth(p.start_date, p.end_date) : null;
   const cur = p.start_date ? projectMonth(p.start_date, today) : null;
   const pms = p.members.filter(m => m.role === 'pm');
-  const tabs = TABS.filter(x => x !== 'settings' || p.access.manage);
+  const tabs = TABS.filter(x => (x !== 'settings' || p.access.manage) && (x !== 'workload' || !(p.access.guest || state.me.is_external)));
 
   const content = h('div');
   mount(root, h('div', { class: 'page wide' },

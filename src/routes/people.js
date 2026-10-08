@@ -46,7 +46,9 @@ async function workload(ctx) {
   const dept = intParam(url, 'department_id'), entity = intParam(url, 'entity_id');
   const base = `SELECT id, name, entity_id, department_id, weekly_hours, work_days, is_external FROM users WHERE deleted_at IS NULL AND active = 1 AND is_external = 0`;
   if (projectId) {
-    await loadProject(ctx, projectId);
+    const { pa } = await loadProject(ctx, projectId);
+    // Capacity and leave of KMOP staff are not for external partners.
+    if (pa.guest || ctx.user.is_external) throw forbidden('Workload is not available to external partners');
     people = await all(db, `${base} AND id IN (SELECT user_id FROM project_members WHERE project_id = ? AND removed_at IS NULL) ORDER BY name`, projectId);
   } else if (ids) people = await all(db, `${base} AND id IN (SELECT value FROM json_each(?)) ORDER BY name`, jsonIds(ids));
   else if (dept) people = await all(db, `${base} AND department_id = ? ORDER BY name`, dept);

@@ -320,6 +320,7 @@ await S.get(`/workload?project_id=${proj.id}&weeks=8`);
 const wl = await S.get(`/workload?user_ids=${member.id}&from=${start}&weeks=12`);
 check(wl.data?.people?.[0]?.weeks?.length === 12, 'workload has 12 weeks');
 await S.get('/workload?scope=all&weeks=4');
+await G.get(`/workload?project_id=${proj.id}`, { expect: 403 });
 const lv = (await M.post('/leave', { start_date: soon, end_date: soon, kind: 'annual' })).data;
 await M.get('/leave?user_id=me');
 await S.get(`/leave?from=${start}&to=${end}`);

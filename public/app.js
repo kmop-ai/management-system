@@ -123,7 +123,7 @@ function renderShell() {
     navItem('#/my-tasks', 'tasks', t('nav.my_tasks')),
     navItem('#/calendar', 'calendar', t('nav.calendar')),
     navItem('#/projects', 'folder', t('nav.projects')),
-    navItem('#/workload', 'chart', t('nav.workload')),
+    !state.me.is_external ? navItem('#/workload', 'chart', t('nav.workload')) : null,
     !state.me.is_external ? navItem('#/people', 'people', t('nav.people')) : null,
     can('templates', 1) ? navItem('#/templates', 'template', t('nav.templates')) : null,
     can('audit', 1) ? navItem('#/audit', 'log', t('nav.audit')) : null,
@@ -189,7 +189,7 @@ function cycleTheme() {
   const cur = document.documentElement.dataset.theme || 'system';
   const next = order[(order.indexOf(cur) + 1) % 3];
   applyTheme(next);
-  api.patch('/me', { theme: next }).catch(() => {});
+  api.patch('/me', { theme: next }).then(u => { if (u) Object.assign(state.me, u); }).catch(() => {});
   toast(t('settings.theme_' + next));
 }
 
