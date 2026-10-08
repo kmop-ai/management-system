@@ -5,6 +5,7 @@ import { first, all, insert, update, paged, nowIso, run, expectedVersion } from 
 import { READ, WRITE } from '../lib/rbac.js';
 import { diff, describeChanges } from '../lib/audit.js';
 import { publicUser } from './me.js';
+import { sha256hex, randomToken } from '../lib/auth.js';
 
 const SORTABLE = { name: 'u.name', email: 'u.email', entity: 'e.code', department: 'd.name', last_login: 'u.last_login_at', created: 'u.created_at' };
 
@@ -272,6 +273,21 @@ async function anonymise(ctx, { id }) {
   return ok({ id: u.id, anonymised: true });
 }
 
+// A one-time sign-in link an administrator hands to someone directly (chat,
+// in person). This is how people sign in on a local installation with no
+// mail server; it is also useful when someone's mail is down.
+async function signInLink(ctx, { id }) {
+  const u = await first(ctx.env.DB, `SELECT * FROM users WHERE id = ? AND deleted_at IS NULL AND active = 1`, Number(id));
+  if (!u) throw notFound('Person not found');
+  canAdminister(ctx, u.entity_id);
+  const body = ctx.req.headers.get('content-type')?.includes('json') ? await readJson(ctx.req) : {};
+  const hours = Math.min(Math.max(Number(body.hours) || 24, 1), 72);
+  const token = randomToken(32);
+  await insert(ctx.env.DB, 'magic_links', { token_hash: await sha256hex(token), user_id: u.id, expires_at: new Date(Date.now() + hours * 3600000).toISOString(), ip: ctx.ip });
+  ctx.audit({ action: 'grant', type: 'user', id: u.id, label: u.name, entity_id: u.entity_id, summary: `${ctx.user.name} created a one-time sign-in link for ${u.name}, valid ${hours} hours` });
+  return ok({ link: `${ctx.url.origin}/#/auth/verify?token=${encodeURIComponent(token)}`, expires_in_hours: hours });
+}
+
 export default [
   ['GET', '/api/users', list],
   ['POST', '/api/users', invite],
@@ -285,5 +301,6 @@ export default [
   ['POST', '/api/users/:id/module-access', grantModule],
   ['DELETE', '/api/users/:id/module-access/:accessId', revokeModule],
   ['GET', '/api/users/:id/export', exportData],
+  ['POST', '/api/users/:id/sign-in-link', signInLink],
   ['POST', '/api/users/:id/anonymise', anonymise],
 ];

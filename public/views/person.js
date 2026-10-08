@@ -6,7 +6,7 @@
 import { h, mount, icon, todayStr } from '../lib/dom.js';
 import { api, listAll } from '../lib/api.js';
 import { state, t, can, entityById, deptById, deptName, roleLabel, moduleLabel } from '../lib/state.js';
-import { formDialog, confirmDialog, showError, toast, avatar, fmtDate, fmtDateTime, timeAgo, emptyState, spinner } from '../lib/ui.js';
+import { formDialog, confirmDialog, showError, toast, avatar, fmtDate, fmtDateTime, timeAgo, emptyState, spinner, modal, copyText } from '../lib/ui.js';
 import { ISO_DAYS, weekdayName, workDaysText } from './people.js';
 
 const LEAVE_KINDS = ['annual', 'sick', 'training', 'unpaid', 'other'];
@@ -322,6 +322,14 @@ function accessSection(u, self) {
         if (!await confirmDialog(t('access.revoke_sessions_confirm', { name: u.name }), { okLabel: t('access.revoke_sessions') })) return;
         try { await api.post(`/users/${u.id}/revoke-sessions`); toast(t('access.sessions_revoked')); if (self) location.reload(); } catch (e) { showError(e); }
       } }, icon('key', 14), t('access.revoke_sessions')),
+      u.active ? h('button', { class: 'btn', onclick: async () => {
+        try {
+          const r = await api.post(`/users/${u.id}/sign-in-link`, { hours: 24 });
+          const box = h('input', { class: 'input', readonly: true, value: r.link, style: { width: '100%' }, onfocus: (e) => e.target.select(), 'aria-label': t('access.signin_link') });
+          modal({ title: t('access.signin_link_for', { name: u.name }), body: h('div', { class: 'col' }, h('p', { class: 'small muted' }, t('access.signin_link_hint')), box),
+            footer: [h('button', { class: 'btn primary', onclick: () => copyText(r.link) }, icon('copy', 14), t('common.copy_link'))] });
+        } catch (e) { showError(e); }
+      } }, icon('link', 14), t('access.signin_link')) : null,
       !self ? h('button', { class: ['btn', u.active ? 'danger' : ''], onclick: async () => {
         const deactivate = !!u.active;
         if (deactivate && !await confirmDialog(t('access.deactivate_confirm', { name: u.name }), { okLabel: t('access.deactivate') })) return;

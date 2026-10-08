@@ -111,7 +111,7 @@ async function search(ctx) {
 
 async function health(ctx) {
   const r = await first(ctx.env.DB, `SELECT COUNT(*) AS n FROM schema_migrations`).catch(() => null);
-  return ok({ ok: true, app: ctx.env.APP_NAME || 'KMOP HQ', migrations: r ? r.n : null, time: nowIso() });
+  return ok({ ok: true, app: ctx.env.APP_NAME || 'KMOP HQ', migrations: r ? r.n : null, time: nowIso(), local_mode: ctx.env.LOCAL_MODE === '1' });
 }
 
 async function devOutbox(ctx) {

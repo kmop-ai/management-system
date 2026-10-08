@@ -119,6 +119,11 @@ export const STRINGS = {
   'auth.verifying': ['Signing you in…', 'Γίνεται σύνδεση…'],
   'auth.invalid': ['This link has expired or was already used.', 'Ο σύνδεσμος έληξε ή έχει ήδη χρησιμοποιηθεί.'],
   'auth.try_again': ['Request a new link', 'Ζήτησε νέο σύνδεσμο'],
+  'auth.local_lead': ['This is a local installation without email. Ask your administrator for a personal sign-in link, or enter your email if you already have one.', 'Αυτή είναι τοπική εγκατάσταση χωρίς email. Ζήτησε από τον διαχειριστή έναν προσωπικό σύνδεσμο σύνδεσης.'],
+  'auth.local_no_email': ['No email is sent from this local installation. Ask your administrator for your sign-in link.', 'Αυτή η τοπική εγκατάσταση δεν στέλνει email. Ζήτησε τον σύνδεσμο σύνδεσης από τον διαχειριστή.'],
+  'access.signin_link': ['Create sign-in link', 'Δημιουργία συνδέσμου σύνδεσης'],
+  'access.signin_link_for': ['Sign-in link for {name}', 'Σύνδεσμος σύνδεσης για {name}'],
+  'access.signin_link_hint': ['Send this link to the person directly (Teams, chat, in person). It works once and expires in 24 hours. Anyone who has it can sign in as them.', 'Στείλε τον σύνδεσμο απευθείας στο άτομο (Teams, chat, προσωπικά). Λειτουργεί μία φορά και λήγει σε 24 ώρες. Όποιος τον έχει μπορεί να συνδεθεί ως αυτό το άτομο.'],
   'auth.signed_out': ['You are signed out.', 'Αποσυνδέθηκες.'],
 
   'common.confirm': ['Please confirm', 'Επιβεβαίωση'],

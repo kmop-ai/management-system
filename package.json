@@ -6,6 +6,10 @@
   "description": "KMOP HQ \u2014 project management and management reporting for the KMOP entities.",
   "scripts": {
     "demo": "bash scripts/demo.sh",
+    "local:setup": "node scripts/local.mjs setup",
+    "local": "node scripts/local.mjs start",
+    "local:link": "node scripts/local.mjs link",
+    "local:backup": "node scripts/local.mjs backup",
     "dev": "wrangler dev --test-scheduled",
     "db:reset": "rm -rf .wrangler/state && npm run db:migrate && npm run db:seed",
     "db:migrate": "node scripts/check-migrations.mjs && wrangler d1 migrations apply kmop-hq --local",

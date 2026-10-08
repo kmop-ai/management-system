@@ -364,6 +364,9 @@ await S.post(`/tasks/${A.id}/restore`);
 await S.del(`/projects/${proj.id}`);
 await S.post(`/projects/${proj.id}/restore`);
 await S.del(`/projects/${proj.id}`);
+const sl = await S.post(`/users/${member.id}/sign-in-link`, { hours: 2 });
+check(sl.data?.link?.includes('#/auth/verify?token='), 'admin sign-in link');
+await M.post(`/users/${adm.data.id}/sign-in-link`, {}, { expect: 403 });
 await S.post(`/users/${member.id}/revoke-sessions`);
 await M.get('/me', { expect: 401 });
 await M.get(`/users/${member.id}/export`, { expect: 401 });  // sessions were revoked above
