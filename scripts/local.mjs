@@ -39,7 +39,13 @@ function migrate() {
 
 function makeLink(email, hours = 72) {
   const u = sql(`SELECT id, name FROM users WHERE email = ${q(email.toLowerCase())} AND deleted_at IS NULL AND active = 1`)[0];
-  if (!u) { console.error(`\n  No active person with the email ${email}. Add them in the app first (People → Add person).\n`); process.exit(1); }
+  if (!u) {
+    const all = sql(`SELECT email, name FROM users WHERE deleted_at IS NULL AND active = 1 ORDER BY name LIMIT 50`);
+    console.error(`\n  No active person with the email ${email}. Add them in the app first (People → Add person).`);
+    if (all.length) console.error(`\n  People who can sign in:\n${all.map(x => `    ${x.email}   (${x.name})`).join('\n')}`);
+    console.error('');
+    process.exit(1);
+  }
   const token = randomBytes(32).toString('base64url');
   const hash = createHash('sha256').update(token).digest('hex');
   const exp = new Date(Date.now() + hours * 3600000).toISOString();
@@ -113,8 +119,8 @@ function backup() {
 if (cmd === 'setup') await setup();
 else if (cmd === 'start') start();
 else if (cmd === 'link') {
-  const email = process.argv[3];
-  if (!email) { console.error('  Usage: npm run local:link -- someone@example.org'); process.exit(1); }
+  const email = (process.argv[3] || '').trim();
+  if (!email) { console.error('  Usage: npm run local:link -- someone@example.org'); makeLink('?'); }
   const { name, link } = makeLink(email);
   console.log(`\n  One-time sign-in link for ${name} (valid 72 hours, works once):\n\n      ${link}\n\n  Send it to them directly. Anyone with this link can sign in as ${name}.\n`);
 } else if (cmd === 'backup') backup();
