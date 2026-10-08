@@ -6,6 +6,7 @@ import { sha256hex, randomToken, createSession, sessionCookie, clearCookie, dest
 import { queueEmail, sendPending } from '../lib/mail.js';
 import { auditStmt } from '../lib/audit.js';
 import { t } from '../lib/strings.js';
+import { verifyPassword, passwordLoginEnabled } from '../lib/password.js';
 
 const GENERIC = 'If that address can sign in, a link is on its way. It expires in a few minutes.';
 
@@ -77,6 +78,30 @@ async function verify(ctx) {
     null, { 'set-cookie': sessionCookie(sess, ttl, ctx.url.protocol === 'https:') });
 }
 
+// Email + password, for installations without a mail server.
+async function passwordLogin(ctx) {
+  const { env } = ctx;
+  if (!passwordLoginEnabled(env)) throw new HttpError(404, 'not_found', 'Password sign-in is not enabled here');
+  const { email, password } = new Validator(await readJson(ctx.req)).email('email', { required: true }).string('password', { required: true, max: 200, trim: false }).done();
+  // Ten attempts per address per 15 minutes, so a password cannot be guessed.
+  const rlKey = `rl:pw:${email}`;
+  const count = Number(await env.KV.get(rlKey) || 0);
+  if (count >= 10) throw new HttpError(429, 'rate_limited', 'Too many attempts. Wait 15 minutes, or ask your administrator to reset your password.');
+  const user = await first(env.DB, `SELECT * FROM users WHERE email = ? AND active = 1 AND deleted_at IS NULL`, email);
+  const cred = user ? await first(env.DB, `SELECT * FROM password_credentials WHERE user_id = ?`, user.id) : null;
+  if (!user || !cred || !(await verifyPassword(password, cred))) {
+    await env.KV.put(rlKey, String(count + 1), { expirationTtl: 900 });
+    throw new HttpError(401, 'bad_credentials', 'Email or password is not right.');
+  }
+  await env.KV.delete(rlKey);
+  const days = Number((await first(env.DB, `SELECT value FROM settings WHERE key = 'session_days'`))?.value || 30);
+  const { token: sess, ttl } = await createSession(env, user, 'password', days);
+  ctx.user = user;
+  ctx.pending.push(auditStmt(ctx, { action: 'login', type: 'user', id: user.id, label: user.name, summary: `${user.name} signed in with a password` }));
+  return ok({ user: { id: user.id, name: user.name, email: user.email }, must_change_password: !!cred.must_change },
+    null, { 'set-cookie': sessionCookie(sess, ttl, ctx.url.protocol === 'https:') });
+}
+
 async function logout(ctx) {
   await destroySession(ctx.env, ctx.user);
   return ok({ signed_out: true }, null, { 'set-cookie': clearCookie(ctx.url.protocol === 'https:') });
@@ -92,6 +117,7 @@ async function logoutEverywhere(ctx) {
 export default [
   ['POST', '/api/auth/request-link', requestLink, { auth: false }],
   ['POST', '/api/auth/verify', verify, { auth: false }],
+  ['POST', '/api/auth/password-login', passwordLogin, { auth: false }],
   ['POST', '/api/auth/logout', logout],
   ['POST', '/api/auth/logout-everywhere', logoutEverywhere],
 ];

@@ -6,6 +6,7 @@ import { READ, WRITE } from '../lib/rbac.js';
 import { diff, describeChanges } from '../lib/audit.js';
 import { publicUser } from './me.js';
 import { sha256hex, randomToken } from '../lib/auth.js';
+import { hashPassword, temporaryPassword, passwordLoginEnabled } from '../lib/password.js';
 
 const SORTABLE = { name: 'u.name', email: 'u.email', entity: 'e.code', department: 'd.name', last_login: 'u.last_login_at', created: 'u.created_at' };
 
@@ -70,6 +71,7 @@ async function getOne(ctx, { id }) {
     roles: roles.results, module_access: overrides.results,
     projects: projects.results.filter(p => visibleProjects.has(p.id)),
     can_edit: ctx.access.canEditPerson(u),
+    password_status: passwordLoginEnabled(ctx.env) ? ((await first(ctx.env.DB, `SELECT must_change FROM password_credentials WHERE user_id = ?`, u.id))?.must_change ?? null) : undefined,
     can_see_metrics: ctx.access.canSeeMetricsOf(u),
   });
 }
@@ -98,7 +100,10 @@ async function invite(ctx) {
   await insert(ctx.env.DB, 'user_roles', { user_id: id, role, granted_by: ctx.user.id });
   ctx.audit({ action: 'create', type: 'user', id, label: v.name, entity_id: v.entity_id,
     summary: `${ctx.user.name} added ${v.name} (${v.email}) as ${role.replace(/_/g, ' ')}` });
-  return created(publicUser(await first(ctx.env.DB, `SELECT * FROM users WHERE id = ?`, id)));
+  // Without a mail server, the new person gets a temporary password that the
+  // administrator passes on; they choose their own at first sign-in.
+  const temporary_password = passwordLoginEnabled(ctx.env) ? await setTemporaryPassword(ctx, id) : null;
+  return created({ ...publicUser(await first(ctx.env.DB, `SELECT * FROM users WHERE id = ?`, id)), temporary_password });
 }
 
 async function patch(ctx, { id }) {
@@ -288,6 +293,28 @@ async function signInLink(ctx, { id }) {
   return ok({ link: `${ctx.url.origin}/#/auth/verify?token=${encodeURIComponent(token)}`, expires_in_hours: hours });
 }
 
+async function setTemporaryPassword(ctx, userId) {
+  const pw = temporaryPassword();
+  const h = await hashPassword(pw);
+  await ctx.env.DB.prepare(`INSERT INTO password_credentials (user_id, hash, salt, iterations, must_change, set_by, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)
+    ON CONFLICT (user_id) DO UPDATE SET hash = excluded.hash, salt = excluded.salt, iterations = excluded.iterations, must_change = 1, set_by = excluded.set_by, updated_at = excluded.updated_at`)
+    .bind(userId, h.hash, h.salt, h.iterations, ctx.user.id, nowIso()).run();
+  return pw;
+}
+
+// Forgotten password: an administrator issues a new temporary one. All the
+// person's sessions end; they choose a new password at next sign-in.
+async function resetPassword(ctx, { id }) {
+  if (!passwordLoginEnabled(ctx.env)) throw notFound('Password sign-in is not enabled here');
+  const u = await first(ctx.env.DB, `SELECT * FROM users WHERE id = ? AND deleted_at IS NULL AND active = 1`, Number(id));
+  if (!u) throw notFound('Person not found');
+  canAdminister(ctx, u.entity_id);
+  const pw = await setTemporaryPassword(ctx, u.id);
+  if (u.id !== ctx.user.id) await run(ctx.env.DB, `UPDATE users SET token_version = token_version + 1 WHERE id = ?`, u.id);
+  ctx.audit({ action: 'grant', type: 'user', id: u.id, label: u.name, entity_id: u.entity_id, summary: `${ctx.user.name} reset the password of ${u.name}; they choose a new one at next sign-in` });
+  return ok({ temporary_password: pw });
+}
+
 export default [
   ['GET', '/api/users', list],
   ['POST', '/api/users', invite],
@@ -302,5 +329,6 @@ export default [
   ['DELETE', '/api/users/:id/module-access/:accessId', revokeModule],
   ['GET', '/api/users/:id/export', exportData],
   ['POST', '/api/users/:id/sign-in-link', signInLink],
+  ['POST', '/api/users/:id/reset-password', resetPassword],
   ['POST', '/api/users/:id/anonymise', anonymise],
 ];

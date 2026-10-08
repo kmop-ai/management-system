@@ -116,6 +116,30 @@ await S.del(`/users/${member.id}/roles/${aud.data.id}`);
 const ma = await S.post(`/users/${member.id}/module-access`, { module: 'finance', entity_id: 1, level: 1, reason: 'smoke test' });
 await S.del(`/users/${member.id}/module-access/${ma.data.id}`);
 const M = new Client('member'); await M.signIn(mEmail);
+// Password sign-in (enabled with PASSWORD_LOGIN=1 / LOCAL_MODE=1)
+const health = (await anon.get('/health')).data;
+if (health.password_login) {
+  check(typeof member.temporary_password === 'string' && member.temporary_password.length >= 10, 'new person gets a temporary password');
+  const P1 = new Client('pw');
+  await P1.post('/auth/password-login', { email: mEmail, password: 'wrong-password' }, { expect: 401 });
+  const pl = await P1.post('/auth/password-login', { email: mEmail, password: member.temporary_password });
+  check(pl.data?.must_change_password === true, 'temporary password must be changed');
+  check((await P1.get('/me')).data?.must_change_password === true, 'me reports must_change_password');
+  await P1.post('/me/password', { password: 'short' }, { expect: 422 });
+  await P1.post('/me/password', { password: 'a-good-long-password' });
+  await P1.post('/me/password', { password: 'another-long-password', current: 'nope' }, { expect: 422 });
+  const P2 = new Client('pw2');
+  const pl2 = await P2.post('/auth/password-login', { email: mEmail, password: 'a-good-long-password' });
+  check(pl2.data?.must_change_password === false, 'own password signs in without change');
+  const rp = await S.post(`/users/${member.id}/reset-password`);
+  check(!!rp.data?.temporary_password, 'admin reset gives a new temporary password');
+  await P2.get('/me', { expect: 401 }); // reset ends their sessions
+  await M.signIn(mEmail);
+} else {
+  await anon.post('/auth/password-login', { email: mEmail, password: 'x' }, { expect: 404 });
+  await S.post('/me/password', { password: 'whatever-long' }, { expect: 404 });
+  await S.post(`/users/${member.id}/reset-password`, {}, { expect: 404 });
+}
 const G = new Client('guest'); await G.signIn(gEmail);
 await M.post('/users', { email: 'x@kmop.org', name: 'Nope' }, { expect: 403 });
 

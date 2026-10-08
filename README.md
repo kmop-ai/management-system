@@ -47,20 +47,20 @@ a recurring ritual coming up.
 
 ### Running it as a real local installation (no cloud)
 
-KMOP HQ can run permanently on one office computer, with real data and no cloud services. It runs on
-workerd (the open-source runtime Cloudflare uses) on that machine; everything is stored in `local-data/`.
+KMOP HQ can run on one office computer, with real data and no cloud services: workerd (the open-source
+runtime Cloudflare uses) runs on that machine and everything is stored in `local-data/`.
 
-```bash
-npm run local:setup               # once: database, the three entities, you as administrator
-npm run local                     # start; colleagues on the same network use the address it prints
-npm run local:link -- a@kmop.org  # one-time sign-in link for someone (or People → person → Create sign-in link)
-npm run local:backup              # archive local-data/ into backups/ (stop it first for a consistent copy)
-```
+* **Start:** double-click **`Start KMOP HQ.command`** (first time: it asks your name, email, language and
+  makes you administrator). The window shows the address for colleagues, e.g.
+  `http://MacBook-Pro-Danai.local:8787`, and keeps the Mac awake while it runs.
+* **Sign-in is email + password.** Administration → People → Add person shows a temporary password to
+  pass on; at first sign-in each person chooses their own. Forgotten password: "Reset password" on the
+  person's page (or `npm run local:reset-password -- a@kmop.org`).
+* **Backups:** `npm run local:backup` (stop it first) → `backups/`; copy that folder to an external disk.
 
-There is no email in this mode: add people in **Administration → People**, then hand them their sign-in
-link directly. Due-date notices, recurring tasks and the inbox work as normal (the start script runs the
-hourly jobs). The computer must stay on, and it is reachable only on the office network. After
-`git pull`, `npm run local` applies any new migrations automatically.
+Limits: reachable only on the office network, only while that computer is on, and no email (everything
+still lands in each person's in-app Inbox). Password sign-in is on when `LOCAL_MODE=1` or
+`PASSWORD_LOGIN=1`; the cloud deployment keeps magic links.
 
 ### Deploying to Cloudflare
 

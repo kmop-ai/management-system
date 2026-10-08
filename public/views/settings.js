@@ -17,6 +17,7 @@ const KIND_LABELS = () => ({
 const EMAIL_OPTIONS = () => [['immediate', t('settings.email_immediate')], ['digest', t('settings.email_digest')], ['off', t('settings.email_off')]];
 const levelLabel = (n) => [t('common.level_0'), t('common.level_1'), t('common.level_2'), t('common.level_3')][n] ?? String(n);
 
+import { passwordForm } from './password.js';
 export default async function settings(root) {
   const me = state.me;
   const field = (id, label, input, hint) => h('div', { class: 'field' }, h('label', { for: id }, label), input, hint ? h('div', { class: 'hint' }, hint) : null);
@@ -143,7 +144,7 @@ export default async function settings(root) {
 
   mount(root, h('div', { class: 'page' },
     h('div', { class: 'page-head' }, h('h1', null, t('nav.settings')), h('a', { class: 'sub', href: `#/people/${me.id}` }, t('settings.my_profile'))),
-    h('div', { class: 'col gap-16 settings-col' }, profile, looks, digest, prefs, capacity, access, sessions)));
+    h('div', { class: 'col gap-16 settings-col' }, profile, looks, state.passwordLogin ? card('st-password', t('pw.section'), passwordForm()) : null, digest, prefs, capacity, access, sessions)));
 
   // load notification prefs
   try {

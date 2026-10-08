@@ -17,7 +17,8 @@
     "check": "node scripts/check-migrations.mjs && node scripts/check-schema.mjs && node scripts/check-i18n.mjs",
     "smoke": "node scripts/smoke.mjs",
     "test": "bash scripts/test-local.sh",
-    "deploy": "npm run check && wrangler d1 migrations apply kmop-hq --remote && wrangler deploy"
+    "deploy": "npm run check && wrangler d1 migrations apply kmop-hq --remote && wrangler deploy",
+    "local:reset-password": "node scripts/local.mjs reset-password"
   },
   "devDependencies": {
     "wrangler": "^4.40.0"

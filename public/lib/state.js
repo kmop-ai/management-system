@@ -26,6 +26,9 @@ export function setBootstrap(d) {
   state.modules = d.modules;
   state.unread = d.unread;
   state.devMode = d.dev_mode;
+  state.passwordLogin = !!d.password_login;
+  state.appUrl = d.app_url || null;
+  state.mustChangePassword = !!d.must_change_password;
   state.locale = d.user.locale || 'en';
   document.documentElement.lang = state.locale;
 }

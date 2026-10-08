@@ -27,8 +27,9 @@ export default async function login(root, params, query) {
     h('div', { class: 'field' }, h('label', { for: 'login-email' }, t('auth.email_label')), email),
     btn, msg);
   // A local installation sends no email: say so, instead of "check your inbox".
-  let local = false;
-  try { local = !!(await api.get('/health')).local_mode; } catch {}
+  let local = false, pwLogin = false;
+  try { const hl = await api.get('/health'); local = !!hl.local_mode; pwLogin = !!hl.password_login; } catch {}
+  if (pwLogin) return passwordLogin(root, query);
   mount(root, h('div', { class: 'auth-wrap' }, h('main', { class: 'auth-card' },
     h('div', { class: 'logo', 'aria-hidden': 'true' }, 'K'),
     h('h1', { class: 'mb-8' }, t('auth.title')),
@@ -53,4 +54,36 @@ async function verify(root, query) {
       h('div', { class: 'banner danger mb-16' }, t('auth.invalid')),
       h('a', { class: 'btn primary', href: '#/login' }, t('auth.try_again')))));
   }
+}
+
+// Email + password (installations without a mail server).
+function passwordLogin(root, query) {
+  const msg = h('div', { 'aria-live': 'polite' });
+  const email = h('input', { class: 'input', id: 'login-email', type: 'email', required: true, autocomplete: 'username', style: { width: '100%' } });
+  const pw = h('input', { class: 'input', id: 'login-password', type: 'password', required: true, autocomplete: 'current-password', style: { width: '100%' } });
+  const btn = h('button', { class: 'btn primary', type: 'submit', style: { width: '100%' } }, t('auth.sign_in'));
+  const form = h('form', { class: 'col gap-12', onsubmit: async (e) => {
+    e.preventDefault();
+    btn.disabled = true;
+    try {
+      await api.post('/auth/password-login', { email: email.value.trim(), password: pw.value });
+      const next = query.next && query.next.startsWith('#/') && !query.next.startsWith('#/auth') && !query.next.startsWith('#/login') ? query.next : '#/my-tasks';
+      location.replace(location.pathname + next);
+      location.reload();
+    } catch (err) {
+      mount(msg, h('div', { class: 'banner danger' }, err.code === 'bad_credentials' ? t('auth.bad_credentials') : errorText(err)));
+      btn.disabled = false;
+    }
+  } },
+    h('div', { class: 'field' }, h('label', { for: 'login-email' }, t('auth.email_label')), email),
+    h('div', { class: 'field' }, h('label', { for: 'login-password' }, t('auth.password')), pw),
+    btn, msg,
+    h('p', { class: 'muted xs' }, t('auth.forgot')));
+  mount(root, h('div', { class: 'auth-wrap' }, h('main', { class: 'auth-card' },
+    h('div', { class: 'logo', 'aria-hidden': 'true' }, 'K'),
+    h('h1', { class: 'mb-16' }, t('auth.title')),
+    form,
+    h('p', { class: 'muted xs mt-16' }, 'KMOP ASSOCIATION · KMOP POLICY CENTER · KMOP EDUCATION HUB'))));
+  document.title = t('auth.title');
+  email.focus();
 }

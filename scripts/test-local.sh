@@ -16,7 +16,7 @@ echo "migrated + seeded $STATE"
 
  # Refuse to test against a leftover server from an earlier run.
 if curl -s "http://localhost:$PORT/api/health" >/dev/null; then echo "port $PORT is already in use — stop that server first"; exit 1; fi
-npx wrangler dev --port "$PORT" --persist-to "$STATE" --test-scheduled > .wrangler/test-dev.log 2>&1 &
+npx wrangler dev --port "$PORT" --persist-to "$STATE" --test-scheduled --var PASSWORD_LOGIN:1 > .wrangler/test-dev.log 2>&1 &
 DEV=$!
 # wrangler starts workerd as a child; stop the whole tree, not just npx.
 trap 'pkill -P $DEV 2>/dev/null; kill $DEV 2>/dev/null; pkill -f -- "--port $PORT" 2>/dev/null || true' EXIT

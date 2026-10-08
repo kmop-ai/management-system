@@ -253,6 +253,12 @@ async function boot() {
     try {
       setBootstrap(await api.get('/me'));
       applyTheme(state.me.theme);
+      // A temporary password from an administrator must be replaced first.
+      if (state.mustChangePassword) {
+        const { forcedPasswordScreen } = await import('./views/password.js');
+        forcedPasswordScreen(document.getElementById('app'));
+        return;
+      }
     } catch (e) {
       if (e.status !== 401) { mount(document.getElementById('app'), h('div', { class: 'auth-wrap' }, h('div', { class: 'banner danger' }, t('common.error'), ' — ', e.message))); return; }
       return; // the unauthorized handler redirected to #/login
