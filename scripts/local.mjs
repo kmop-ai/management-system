@@ -16,12 +16,17 @@
 
 import { spawn, execFileSync } from 'node:child_process';
 import { createHash, randomBytes, pbkdf2Sync, randomInt } from 'node:crypto';
-import { existsSync, mkdirSync } from 'node:fs';
-import { networkInterfaces, hostname, platform } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from 'node:fs';
+import { networkInterfaces, hostname, platform, arch } from 'node:os';
 import { createInterface } from 'node:readline/promises';
 
 const DATA = 'local-data';
-const PORT = process.env.PORT || '8787';
+const PORT = process.env.PORT || '8787';        // what people connect to (Caddy)
+const APP_PORT = String(Number(PORT) + 1);        // the app itself, reachable only from this computer
+const CADDY_VERSION = '2.8.4';
+const CONFIG = `${DATA}/config.json`;
+const readConfig = () => { try { return JSON.parse(readFileSync(CONFIG, 'utf8')); } catch { return {}; } };
+const writeConfig = (c) => writeFileSync(CONFIG, JSON.stringify(c, null, 2));
 const cmd = process.argv[2] || 'start';
 const wrangler = (args, opts = {}) => execFileSync('npx', ['wrangler', ...args], { encoding: 'utf8', stdio: opts.quiet ? 'pipe' : 'inherit', ...opts });
 const sql = (command) => JSON.parse(wrangler(['d1', 'execute', 'kmop-hq', '--local', '--persist-to', DATA, '--json', '--command', command], { quiet: true }))[0].results;
@@ -54,6 +59,36 @@ function migrate() {
   mkdirSync(DATA, { recursive: true });
   execFileSync('node', ['scripts/check-migrations.mjs'], { stdio: 'inherit' });
   wrangler(['d1', 'migrations', 'apply', 'kmop-hq', '--local', '--persist-to', DATA], { quiet: true, input: 'y\n' });
+}
+
+// ---- Caddy: the front door ----------------------------------------------
+//
+// The app (workerd) only listens on 127.0.0.1. Everyone — office network and,
+// with a public address, the internet — goes through Caddy, which:
+//   * blocks the runtime's built-in development endpoints (/cdn-cgi/…, the
+//     local database explorer, /__scheduled), which must never be reachable;
+//   * on a public address, gets and renews a Let's Encrypt certificate by
+//     itself and serves HTTPS only.
+function caddyBinary() {
+  for (const p of ['bin/caddy', '/opt/homebrew/bin/caddy', '/usr/local/bin/caddy', '/usr/bin/caddy']) if (existsSync(p)) return p;
+  // Download the official release once, into ./bin (about 15 MB).
+  const os = platform() === 'darwin' ? 'mac' : 'linux';
+  const a = arch() === 'arm64' ? 'arm64' : 'amd64';
+  const url = `https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_${os}_${a}.tar.gz`;
+  console.log(`  Downloading Caddy ${CADDY_VERSION} (one time)…`);
+  mkdirSync('bin', { recursive: true });
+  execFileSync('bash', ['-c', `curl -fsSL "${url}" | tar -xz -C bin caddy`], { stdio: 'inherit' });
+  chmodSync('bin/caddy', 0o755);
+  return 'bin/caddy';
+}
+
+function caddyfile(cfg) {
+  const protect = `\t@internal path /cdn-cgi/* /__scheduled*\n\trespond @internal 404\n\tencode gzip\n\treverse_proxy 127.0.0.1:${APP_PORT}\n`;
+  let f = `{\n\tadmin off\n${cfg.public_host ? (cfg.admin_email ? `\temail ${cfg.admin_email}\n` : '') : '\tauto_https off\n'}}\n\n`;
+  f += `# Office network\nhttp://:${PORT} {\n${protect}}\n`;
+  if (cfg.public_host) f += `\n# Internet (HTTPS, certificate from Let's Encrypt, renewed automatically)\n${cfg.public_host} {\n${protect}\theader Strict-Transport-Security "max-age=31536000"\n}\n`;
+  writeFileSync(`${DATA}/Caddyfile`, f);
+  return `${DATA}/Caddyfile`;
 }
 
 function makeLink(email, hours = 72) {
@@ -112,17 +147,37 @@ function start() {
   const anyAdminWithPw = sql(`SELECT COUNT(*) AS n FROM password_credentials p JOIN user_roles r ON r.user_id = p.user_id AND r.role = 'super_admin' AND r.revoked_at IS NULL`)[0].n;
   let firstPw = null;
   if (admin && !anyAdminWithPw) firstPw = { email: admin.email, pw: setTemporaryPassword(admin.id) };
-  const url = nameUrl() || baseUrl();
+  const cfg = readConfig();
+  const url = cfg.public_host ? `https://${cfg.public_host}` : (nameUrl() || baseUrl());
+  const caddyBin = caddyBinary();
+  const caddy = spawn(caddyBin, ['run', '--config', caddyfile(cfg), '--adapter', 'caddyfile'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, XDG_DATA_HOME: `${process.cwd()}/${DATA}/caddy`, XDG_CONFIG_HOME: `${process.cwd()}/${DATA}/caddy` },
+  });
+  const caddyLog = (b) => {
+    for (const line of b.toString().split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const j = JSON.parse(line);
+        if (/certificate obtained successfully/.test(j.msg)) console.log(`  [https] ✅ certificate obtained — https://${cfg.public_host} works from anywhere`);
+        else if (j.level === 'error' && /could not get certificate|obtaining certificate/.test(j.msg + (j.error || ''))) console.log(`  [https] ⚠ no certificate yet for ${cfg.public_host}: check the DNS record and that the router forwards ports 80 and 443 to this computer (docs/OFFICE-SERVER.md). Retrying automatically.`);
+        else if (j.level === 'error') console.log(`  [https] ${j.msg}${j.error ? ': ' + j.error : ''}`);
+      }
+      catch { if (/error/i.test(line)) console.log('  [https] ' + line); }
+    }
+  };
+  caddy.stdout.on('data', caddyLog); caddy.stderr.on('data', caddyLog);
+  caddy.on('exit', (c) => { if (c) console.log(`\n  The front door (Caddy) stopped with code ${c}. Is another program using port ${PORT}${cfg.public_host ? ', 80 or 443' : ''}?\n`); });
   // On a Mac, keep the computer awake while KMOP HQ runs (the screen may still sleep).
   const keepAwake = platform() === 'darwin' ? spawn('caffeinate', ['-i', '-w', String(process.pid)], { stdio: 'ignore' }) : null;
-  const dev = spawn('npx', ['wrangler', 'dev', '--ip', '0.0.0.0', '--port', PORT, '--persist-to', DATA, '--test-scheduled',
+  const dev = spawn('npx', ['wrangler', 'dev', '--ip', '127.0.0.1', '--port', APP_PORT, '--persist-to', DATA, '--test-scheduled',
     '--var', 'DEV_MODE:0', '--var', 'LOCAL_MODE:1', '--var', `APP_URL:${url}`, '--var', 'AUTO_PROVISION:0'], { stdio: ['inherit', 'pipe', 'inherit'] });
   let announced = false;
   dev.stdout.on('data', (b) => {
     const s = b.toString();
     if (!announced && s.includes('Ready on')) {
       announced = true;
-      console.log(`\n  ✅  KMOP HQ is running.\n\n     Address for everyone in the office:   ${url}\n     (also works: ${baseUrl()} , and on this computer http://localhost:${PORT})\n`);
+      console.log(`\n  ✅  KMOP HQ is running.\n\n     ${cfg.public_host ? 'Address for everyone, from anywhere:' : 'Address for everyone in the office:'}   ${url}\n     ${cfg.public_host ? `(in the office also: ${nameUrl() || baseUrl()})` : `(also: ${baseUrl()} — only on the office network. For access from anywhere: npm run local:public -- hq.kmop.org)`}\n`);
       if (firstPw) console.log(`     Sign in as ${firstPw.email} with the temporary password  ${firstPw.pw}\n`);
       console.log(`     Add colleagues in the app: Administration → People → Add person.\n     It shows each person's temporary password to give them.\n\n     Keep this window open. Closing it stops KMOP HQ for everyone.\n`);
       if (platform() === 'darwin') spawn('open', [`http://localhost:${PORT}`], { stdio: 'ignore' });
@@ -131,12 +186,12 @@ function start() {
   });
   // Hourly jobs (due-date notices, recurring tasks, retention) — the
   // local runtime does not fire cron triggers by itself.
-  const tick = () => fetch(`http://localhost:${PORT}/__scheduled?cron=5+*+*+*+*`).catch(() => {});
+  const tick = () => fetch(`http://127.0.0.1:${APP_PORT}/__scheduled?cron=5+*+*+*+*`).catch(() => {});
   setTimeout(tick, 15000);
   setInterval(tick, 3600000);
-  const stop = () => { dev.kill('SIGINT'); if (keepAwake) keepAwake.kill(); process.exit(0); };
+  const stop = () => { dev.kill('SIGINT'); caddy.kill(); if (keepAwake) keepAwake.kill(); process.exit(0); };
   process.on('SIGINT', stop); process.on('SIGTERM', stop);
-  dev.on('exit', (c) => process.exit(c ?? 0));
+  dev.on('exit', (c) => { caddy.kill(); process.exit(c ?? 0); });
 }
 
 function backup() {
@@ -159,5 +214,16 @@ else if (cmd === 'link') {
   if (!u) { makeLink(process.argv[3] || '?'); }
   const pw = setTemporaryPassword(u.id);
   console.log(`\n  New temporary password for ${u.name} (${u.email}):  ${pw}\n  They choose their own at next sign-in.\n`);
+} else if (cmd === 'public') {
+  const host = (process.argv[3] || '').trim().toLowerCase();
+  const cfg = readConfig();
+  if (!host) { console.log(`\n  Public address: ${cfg.public_host || '(none — office network only)'}\n  Set one:  npm run local:public -- hq.kmop.org     Remove:  npm run local:public -- off\n`); }
+  else if (host === 'off') { delete cfg.public_host; writeConfig(cfg); console.log('\n  Public address removed. Restart KMOP HQ.\n'); }
+  else if (!/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(host)) { console.error('  That is not a domain name, e.g. hq.kmop.org'); process.exit(1); }
+  else {
+    const admin = sql(`SELECT u.email FROM users u JOIN user_roles r ON r.user_id = u.id AND r.role = 'super_admin' AND r.revoked_at IS NULL ORDER BY u.id LIMIT 1`)[0];
+    cfg.public_host = host; if (admin) cfg.admin_email = admin.email; writeConfig(cfg);
+    console.log(`\n  Public address set to https://${host}\n\n  Before restarting KMOP HQ, your IT person or provider must have done the steps in docs/OFFICE-SERVER.md:\n    1. a DNS record  ${host}  →  the office's static public IP\n    2. router: forward TCP ports 80 and 443  →  this computer (${lanAddress()})\n  Then restart KMOP HQ. The certificate is obtained automatically on first start.\n`);
+  }
 } else if (cmd === 'backup') backup();
 else { console.error(`  Unknown command ${cmd}. Use setup, start, link or backup.`); process.exit(1); }

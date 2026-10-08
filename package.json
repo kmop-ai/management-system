@@ -18,7 +18,8 @@
     "smoke": "node scripts/smoke.mjs",
     "test": "bash scripts/test-local.sh",
     "deploy": "npm run check && wrangler d1 migrations apply kmop-hq --remote && wrangler deploy",
-    "local:reset-password": "node scripts/local.mjs reset-password"
+    "local:reset-password": "node scripts/local.mjs reset-password",
+    "local:public": "node scripts/local.mjs public"
   },
   "devDependencies": {
     "wrangler": "^4.40.0"

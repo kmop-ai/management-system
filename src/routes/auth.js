@@ -40,7 +40,7 @@ async function requestLink(ctx) {
     expires_at: new Date(Date.now() + minutes * 60000).toISOString(),
     ip: ctx.ip, redirect: redirect && redirect.startsWith('#/') ? redirect : null,
   });
-  const link = `${ctx.url.origin}/#/auth/verify?token=${encodeURIComponent(token)}`;
+  const link = `${ctx.origin}/#/auth/verify?token=${encodeURIComponent(token)}`;
   const L = user.locale || 'en';
   await queueEmail(env, {
     to: user.email, user_id: user.id, kind: 'magic_link',
@@ -75,7 +75,7 @@ async function verify(ctx) {
   ctx.user = user;
   ctx.pending.push(auditStmt(ctx, { action: 'login', type: 'user', id: user.id, label: user.name, summary: `${user.name} signed in with an email link` }));
   return ok({ user: { id: user.id, name: user.name, email: user.email }, redirect: link.redirect },
-    null, { 'set-cookie': sessionCookie(sess, ttl, ctx.url.protocol === 'https:') });
+    null, { 'set-cookie': sessionCookie(sess, ttl, ctx.secure) });
 }
 
 // Email + password, for installations without a mail server.
@@ -99,19 +99,19 @@ async function passwordLogin(ctx) {
   ctx.user = user;
   ctx.pending.push(auditStmt(ctx, { action: 'login', type: 'user', id: user.id, label: user.name, summary: `${user.name} signed in with a password` }));
   return ok({ user: { id: user.id, name: user.name, email: user.email }, must_change_password: !!cred.must_change },
-    null, { 'set-cookie': sessionCookie(sess, ttl, ctx.url.protocol === 'https:') });
+    null, { 'set-cookie': sessionCookie(sess, ttl, ctx.secure) });
 }
 
 async function logout(ctx) {
   await destroySession(ctx.env, ctx.user);
-  return ok({ signed_out: true }, null, { 'set-cookie': clearCookie(ctx.url.protocol === 'https:') });
+  return ok({ signed_out: true }, null, { 'set-cookie': clearCookie(ctx.secure) });
 }
 
 // Revokes every session this person has, on every device.
 async function logoutEverywhere(ctx) {
   await run(ctx.env.DB, `UPDATE users SET token_version = token_version + 1, updated_at = ? WHERE id = ?`, nowIso(), ctx.user.id);
   ctx.audit({ action: 'revoke', type: 'user', id: ctx.user.id, label: ctx.user.name, summary: `${ctx.user.name} signed out of every device` });
-  return ok({ signed_out: true }, null, { 'set-cookie': clearCookie(ctx.url.protocol === 'https:') });
+  return ok({ signed_out: true }, null, { 'set-cookie': clearCookie(ctx.secure) });
 }
 
 export default [

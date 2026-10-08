@@ -58,7 +58,11 @@ runtime Cloudflare uses) runs on that machine and everything is stored in `local
   person's page (or `npm run local:reset-password -- a@kmop.org`).
 * **Backups:** `npm run local:backup` (stop it first) → `backups/`; copy that folder to an external disk.
 
-Limits: reachable only on the office network, only while that computer is on, and no email (everything
+* **From anywhere:** with a static office IP, a DNS record and ports 80/443 forwarded to the laptop,
+  `npm run local:public -- hq.kmop.org` serves `https://hq.kmop.org` with an automatic Let's Encrypt
+  certificate. Step-by-step for the IT person: [docs/OFFICE-SERVER.md](docs/OFFICE-SERVER.md).
+
+Limits: available only while that computer is on, and no email (everything
 still lands in each person's in-app Inbox). Password sign-in is on when `LOCAL_MODE=1` or
 `PASSWORD_LOGIN=1`; the cloud deployment keeps magic links.
 

@@ -37,9 +37,22 @@ function match(method, pathname) {
   return { route: null, pathMatched };
 }
 
+// The public origin of this request. Behind the local installation's own
+// reverse proxy (Caddy, which terminates HTTPS), the proxy says what the
+// browser used; nowhere else are forwarded headers trusted.
+function publicOrigin(req, env, url) {
+  if (env.LOCAL_MODE === '1') {
+    const proto = req.headers.get('x-forwarded-proto');
+    const host = req.headers.get('x-forwarded-host') || req.headers.get('host');
+    if (proto && host && /^https?$/.test(proto) && /^[a-z0-9.\-:\[\]]+$/i.test(host)) return `${proto}://${host}`;
+  }
+  return url.origin;
+}
+
 function makeContext(req, env, ectx, url) {
+  const origin = publicOrigin(req, env, url);
   const ctx = {
-    env, req, url, ectx,
+    env, req, url, ectx, origin, secure: origin.startsWith('https:'),
     requestId: crypto.randomUUID().slice(0, 8),
     ip: req.headers.get('cf-connecting-ip') || null,
     user: null,
@@ -81,7 +94,7 @@ export default {
       // origin when the browser says where it came from.
       if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
         const origin = req.headers.get('origin');
-        if (origin && origin !== url.origin) throw new HttpError(403, 'bad_origin', 'Cross-origin request refused');
+        if (origin && origin !== ctx.origin) throw new HttpError(403, 'bad_origin', 'Cross-origin request refused');
       }
 
       ctx.user = await loadSession(env, req);
@@ -93,7 +106,7 @@ export default {
       const res = await route.handler(ctx, params);
       if (ctx.pending.length) await env.DB.batch(ctx.pending);
       if (ctx.hasNewNotifications) {
-        ectx.waitUntil(emailImmediate(env, url.origin).then(() => sendPending(env, 20)).catch(e => console.error('immediate email', e)));
+        ectx.waitUntil(emailImmediate(env, ctx.origin).then(() => sendPending(env, 20)).catch(e => console.error('immediate email', e)));
       }
       const headers = new Headers(res.headers);
       headers.set('x-request-id', ctx.requestId);

@@ -290,7 +290,7 @@ async function signInLink(ctx, { id }) {
   const token = randomToken(32);
   await insert(ctx.env.DB, 'magic_links', { token_hash: await sha256hex(token), user_id: u.id, expires_at: new Date(Date.now() + hours * 3600000).toISOString(), ip: ctx.ip });
   ctx.audit({ action: 'grant', type: 'user', id: u.id, label: u.name, entity_id: u.entity_id, summary: `${ctx.user.name} created a one-time sign-in link for ${u.name}, valid ${hours} hours` });
-  return ok({ link: `${ctx.url.origin}/#/auth/verify?token=${encodeURIComponent(token)}`, expires_in_hours: hours });
+  return ok({ link: `${ctx.origin}/#/auth/verify?token=${encodeURIComponent(token)}`, expires_in_hours: hours });
 }
 
 async function setTemporaryPassword(ctx, userId) {
