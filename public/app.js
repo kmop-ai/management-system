@@ -29,7 +29,19 @@ const ROUTES = [
   ['/admin/:tab', () => import('./views/admin.js')],
   ['/audit', () => import('./views/audit.js')],
   ['/settings', () => import('./views/settings.js')],
+  ['/team', () => import('./views/team.js')],
+  ['/team/:tab', () => import('./views/team.js')],
+  ['/help', () => import('./views/help.js')],
 ];
+
+// Which module a route belongs to. Without that module the page does not
+// exist for the person (they get "not found", never a locked page).
+const ROUTE_MODULE = [
+  [/^\/projects/, 'projects'], [/^\/templates/, 'projects'],
+  [/^\/(my-tasks|calendar|workload)$/, 'tasks'],
+  [/^\/(team|admin|audit|people)/, 'team'],
+];
+function moduleFor(path) { for (const [re, m] of ROUTE_MODULE) if (re.test(path)) return m; return null; }
 
 const compiled = ROUTES.map(([path, load, named, opts = {}]) => {
   const keys = [];
@@ -63,6 +75,8 @@ async function route() {
   }
   const { closeTaskDrawer } = await import('./lib/task-drawer.js');
   closeTaskDrawer(true);
+  // A dialog belongs to the page that opened it.
+  for (const d of document.querySelectorAll('dialog[open]')) d.close();
   baseHash = location.hash || '#/my-tasks';
   await renderView(path, query);
 }
@@ -85,9 +99,16 @@ async function renderView(path, query, underlay = false) {
     cleanup = await mod.default(app, { ...params, mode: r.named }, query) || null;
     return;
   }
+  // Home is the first page in the person's own sidebar.
+  if (path === '/' && state.nav?.length && state.nav[0].route !== '#/') { location.replace('#' + state.nav[0].route.slice(1)); return; }
   if (!shellEls) renderShell();
   highlightNav(path);
   const content = shellEls.content;
+  const needed = moduleFor(path);
+  if (needed && !state.access?.modules?.[needed]) {
+    mount(content, h('div', { class: 'page' }, h('div', { class: 'banner' }, t('common.not_found'))));
+    return;
+  }
   mount(content, spinner());
   try {
     const mod = await r.load();
@@ -117,20 +138,9 @@ function navItem(href, iconName, label, extra) {
 
 function renderShell() {
   const unread = h('span', { class: ['count', !state.unread && 'hidden'] }, String(state.unread || ''));
+  const navEl = h('nav', { 'aria-label': t('nav.menu') });
+  const nav = navEl;
   const projectsNav = h('div');
-  const nav = h('nav', { 'aria-label': t('nav.menu') },
-    navItem('#/inbox', 'inbox', t('nav.inbox'), unread),
-    navItem('#/my-tasks', 'tasks', t('nav.my_tasks')),
-    navItem('#/calendar', 'calendar', t('nav.calendar')),
-    navItem('#/projects', 'folder', t('nav.projects')),
-    !state.me.is_external ? navItem('#/workload', 'chart', t('nav.workload')) : null,
-    !state.me.is_external ? navItem('#/people', 'people', t('nav.people')) : null,
-    can('templates', 1) ? navItem('#/templates', 'template', t('nav.templates')) : null,
-    can('audit', 1) ? navItem('#/audit', 'log', t('nav.audit')) : null,
-    can('admin', 1) ? navItem('#/admin', 'shield', t('nav.admin')) : null,
-    h('div', { class: 'nav-heading' }, t('nav.my_projects')),
-    projectsNav,
-  );
   const search = h('input', { class: 'input', type: 'search', placeholder: t('search.placeholder'), 'aria-label': t('nav.search'),
     onkeydown: (e) => { if (e.key === 'Enter' && search.value.trim()) location.hash = '#/search?q=' + encodeURIComponent(search.value.trim()); } });
   const content = h('main', { class: 'content', id: 'main', tabindex: '-1' });
@@ -140,6 +150,7 @@ function renderShell() {
       h('div', { class: 'brand' }, h('span', { class: 'logo' }, 'K'), 'KMOP HQ'),
       nav,
       h('div', { class: 'foot' },
+        h('button', { class: 'btn ghost icon-only', title: t('nav.reorder'), 'aria-label': t('nav.reorder'), onclick: () => reorderSidebar() }, icon('list', 16)),
         h('a', { class: 'nav-item grow', href: '#/settings', dataset: { nav: '#/settings' } }, icon('user', 16), h('span', { class: 'ellipsis' }, state.me.name)),
         h('button', { class: 'btn ghost icon-only', title: t('nav.theme'), 'aria-label': t('nav.theme'), onclick: cycleTheme }, icon('moon', 16)),
       )),
@@ -148,14 +159,51 @@ function renderShell() {
         h('button', { class: 'btn ghost icon-only menu-btn', 'aria-label': t('nav.menu'), onclick: () => root.classList.toggle('nav-open') }, icon('menu')),
         h('div', { class: 'search-box' }, icon('search', 15), search),
         h('div', { class: 'right row' },
-          h('button', { class: 'btn primary', onclick: () => quickAdd(), title: t('nav.quick_add') + ' (Q)' }, icon('plus', 15), h('span', { class: 'hide-mobile' }, t('nav.quick_add'))),
+          h('a', { class: 'btn ghost icon-only', href: '#/inbox', 'aria-label': t('nav.inbox'), title: t('nav.inbox'), style: { position: 'relative' } }, icon('bell', 16), unread),
+          state.access?.modules?.tasks === 'write' ? h('button', { class: 'btn primary', onclick: () => quickAdd(), title: t('nav.quick_add') + ' (Q)' }, icon('plus', 15), h('span', { class: 'hide-mobile' }, t('nav.quick_add'))) : null,
           h('button', { class: 'btn ghost icon-only', 'aria-label': t('nav.shortcuts'), title: t('nav.shortcuts') + ' (?)', onclick: showShortcuts }, '?'),
         )),
       content));
   root.addEventListener('click', (e) => { if (e.target === root && root.classList.contains('nav-open')) root.classList.remove('nav-open'); });
   mount(document.getElementById('app'), root);
-  shellEls = { root, content, unread, projectsNav, search };
-  loadProjectsNav();
+  shellEls = { root, content, unread, projectsNav, search, nav: navEl };
+  renderSidebar();
+}
+
+// The sidebar is built from module access (state.nav, computed by the
+// server): three levels only — group, page, and tabs inside a record.
+const PAGE_ICONS = { dashboard: 'home', projects: 'folder', ka1: 'globe', proposals: 'template', calls: 'calendar', partners: 'people',
+  organisations: 'archive', people: 'user', reporting: 'chart', evaluation: 'star', tasks: 'tasks', team: 'shield', help: 'comment' };
+function renderSidebar() {
+  if (!shellEls) return;
+  const items = [];
+  let lastGroup = null;
+  for (const p of state.nav || []) {
+    if (p.group !== lastGroup && !['main', 'work', 'system'].includes(p.group)) items.push(h('div', { class: 'nav-heading' }, t('navgroup.' + p.group)));
+    else if (p.group !== lastGroup && lastGroup !== null) items.push(h('div', { class: 'nav-sep' }));
+    lastGroup = p.group;
+    items.push(navItem(p.route, PAGE_ICONS[p.key] || 'more', t('page.' + p.key)));
+  }
+  mount(shellEls.nav, items);
+  highlightNav(parseHash().path);
+}
+
+// Reorder my sidebar; saved to my profile.
+async function reorderSidebar() {
+  const { modal } = await import('./lib/ui.js');
+  let order = (state.nav || []).map(p => p.key);
+  const list = h('ol', { class: 'reorder-list' });
+  const draw = () => mount(list, order.map((k, i) => h('li', { class: 'row' },
+    h('span', { class: 'grow' }, t('page.' + k)),
+    h('button', { class: 'btn ghost sm icon-only', 'aria-label': t('nav.move_up') + ' ' + t('page.' + k), disabled: i === 0, onclick: () => { [order[i - 1], order[i]] = [order[i], order[i - 1]]; draw(); list.querySelectorAll('button')[Math.max(0, (i - 1) * 2)]?.focus(); } }, '↑'),
+    h('button', { class: 'btn ghost sm icon-only', 'aria-label': t('nav.move_down') + ' ' + t('page.' + k), disabled: i === order.length - 1, onclick: () => { [order[i + 1], order[i]] = [order[i], order[i + 1]]; draw(); } }, '↓'))));
+  draw();
+  const m = modal({ title: t('nav.reorder'), body: h('div', null, h('p', { class: 'muted small' }, t('nav.reorder_hint')), list), footer: [
+    h('button', { class: 'btn', onclick: () => { order = []; save(); } }, t('nav.reorder_reset')),
+    h('button', { class: 'btn primary', onclick: () => save() }, t('common.save'))] });
+  async function save() {
+    try { state.nav = await api.put('/me/sidebar', { order }); renderSidebar(); m.close(); } catch (e) { (await import('./lib/ui.js')).showError(e); }
+  }
 }
 
 export async function loadProjectsNav() {
@@ -253,12 +301,6 @@ async function boot() {
     try {
       setBootstrap(await api.get('/me'));
       applyTheme(state.me.theme);
-      // A temporary password from an administrator must be replaced first.
-      if (state.mustChangePassword) {
-        const { forcedPasswordScreen } = await import('./views/password.js');
-        forcedPasswordScreen(document.getElementById('app'));
-        return;
-      }
     } catch (e) {
       if (e.status !== 401) { mount(document.getElementById('app'), h('div', { class: 'auth-wrap' }, h('div', { class: 'banner danger' }, t('common.error'), ' — ', e.message))); return; }
       return; // the unauthorized handler redirected to #/login

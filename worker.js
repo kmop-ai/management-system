@@ -100,7 +100,7 @@ export default {
       ctx.user = await loadSession(env, req);
       if (route.opts.auth !== false) {
         if (!ctx.user) throw unauthorized();
-        ctx.access = await loadAccess(env.DB, ctx.user);
+        ctx.access = await loadAccess(env.DB, ctx.user, env);
       }
 
       const res = await route.handler(ctx, params);

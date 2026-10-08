@@ -178,8 +178,10 @@ async function addMember(ctx, { id }) {
   await run(ctx.env.DB, `INSERT INTO project_members (project_id, user_id, role, added_by) VALUES (?, ?, ?, ?)
     ON CONFLICT (project_id, user_id) DO UPDATE SET role = excluded.role, removed_at = NULL, added_by = excluded.added_by, added_at = excluded.added_at`,
     project.id, u.id, role, ctx.user.id);
+  // A supervisor added to a project supervises it (read and comment only).
+  if (u.role === 'supervisor') await run(ctx.env.DB, `INSERT OR IGNORE INTO supervisor_projects (user_id, project_id, granted_by) VALUES (?, ?, ?)`, u.id, project.id, ctx.user.id);
   ctx.audit({ action: 'create', type: 'project_member', id: u.id, label: u.name, entity_id: project.entity_id, project_id: project.id,
-    summary: `${ctx.user.name} added ${u.name} to ${project.name} as ${role}` });
+    summary: `${ctx.user.name} added ${u.name} to ${project.name} as ${u.role === 'supervisor' ? 'supervisor' : role}` });
   ctx.activity({ verb: 'member.added', type: 'user', id: u.id, project_id: project.id, payload: { name: u.name, role } });
   ctx.notify([u.id], { kind: 'added_to_project', object_type: 'project', object_id: project.id, project_id: project.id, title: project.name, url: projectUrl(project.id) });
   ctx.touchProject(project.id);
@@ -210,6 +212,7 @@ async function removeMember(ctx, { id, userId }) {
   if (!m) throw notFound('Member not found');
   if (m.role === 'pm') await ensureAnotherPm(ctx, project.id, m.user_id);
   await run(ctx.env.DB, `UPDATE project_members SET removed_at = ? WHERE project_id = ? AND user_id = ?`, nowIso(), project.id, m.user_id);
+  await run(ctx.env.DB, `DELETE FROM supervisor_projects WHERE project_id = ? AND user_id = ?`, project.id, m.user_id);
   ctx.audit({ action: 'delete', type: 'project_member', id: m.user_id, label: m.name, entity_id: project.entity_id, project_id: project.id,
     summary: `${ctx.user.name} removed ${m.name} from ${project.name}` });
   ctx.activity({ verb: 'member.removed', type: 'user', id: m.user_id, project_id: project.id, payload: { name: m.name } });

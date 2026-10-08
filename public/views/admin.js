@@ -6,7 +6,7 @@
 import { h, mount, icon } from '../lib/dom.js';
 import { api, listAll } from '../lib/api.js';
 import { state, t, can, entityById, deptById, deptName, roleLabel, moduleLabel } from '../lib/state.js';
-import { formDialog, confirmDialog, showError, toast, avatar, fmtDate, fmtDateTime, timeAgo, emptyState, spinner, showCredentials } from '../lib/ui.js';
+import { formDialog, confirmDialog, showError, toast, avatar, fmtDate, fmtDateTime, timeAgo, emptyState, spinner } from '../lib/ui.js';
 
 const TABS = ['people', 'roles', 'entities', 'departments', 'settings'];
 const tabLabel = (x) => ({
@@ -107,7 +107,7 @@ function addPersonDialog(done) {
   formDialog({
     title: t('admin.add_person'),
     submitLabel: t('common.add'),
-    intro: h('p', { class: 'muted small' }, state.passwordLogin ? t('admin.add_person_hint_pw') : t('admin.add_person_hint')),
+    intro: h('p', { class: 'muted small' }, t('admin.add_person_hint')),
     fields: [
       { name: 'name', label: t('common.name'), required: true },
       { name: 'email', label: t('common.email'), type: 'email', required: true },
@@ -125,7 +125,6 @@ function addPersonDialog(done) {
       const body = Object.fromEntries(Object.entries(v).filter(([, x]) => x !== null && x !== ''));
       if (body.is_external && body.role === 'team_member') body.role = 'external_partner';
       const u = await api.post('/users', body);
-      if (u.temporary_password) showCredentials({ name: u.name, email: u.email, password: u.temporary_password });
       toast(t('admin.person_added', { name: u.name }), { action: () => { location.hash = `#/people/${u.id}`; }, actionLabel: t('common.open') });
       await done();
     },

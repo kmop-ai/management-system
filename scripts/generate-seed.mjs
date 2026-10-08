@@ -9,7 +9,7 @@
 //
 // Fictional people and partners; real programme names.
 
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, readFileSync } from 'node:fs';
 
 const out = [];
 const q = (v) => v === null || v === undefined ? 'NULL' : typeof v === 'number' ? String(v) : typeof v === 'object' && v.sql ? v.sql : `'${String(v).replace(/'/g, "''")}'`;
@@ -352,6 +352,12 @@ section('Saved views');
 ins('saved_views', { user_id: 3, scope: 'project:1', name: 'WP3 — open', view_type: 'list', config: JSON.stringify({ filters: { section_id: String(S['1:2']), state: 'open' } }) });
 ins('saved_views', { user_id: 3, scope: 'my_tasks', name: 'High priority', view_type: 'list', config: JSON.stringify({ filters: { priority: 'high,urgent' } }) });
 ins('saved_views', { user_id: 7, scope: 'project:2', name: 'Board by status', view_type: 'board', config: JSON.stringify({ group: 'status' }), shared: 1 });
+
+section('Access model (role + module grants + supervised projects) — same rules as migration 005');
+out.push(...readFileSync(new URL('../migrations/005_roles_modules_google.sql', import.meta.url), 'utf8')
+  .split('\n').filter(l => /^(UPDATE users SET role|INSERT OR IGNORE INTO (module_grants|supervisor_projects)|  SELECT|   WHERE)/.test(l)));
+// A KMOP member with a narrower set, to show module access: Christina sees Tasks and Running projects only.
+out.push(`DELETE FROM module_grants WHERE user_id = 11 AND module NOT IN ('projects','tasks');`);
 
 writeFileSync(new URL('../data/seed.sql', import.meta.url), out.join('\n') + '\n');
 console.log(`data/seed.sql: ${out.length} lines, ${tid - 1} tasks`);

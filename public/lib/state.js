@@ -26,9 +26,8 @@ export function setBootstrap(d) {
   state.modules = d.modules;
   state.unread = d.unread;
   state.devMode = d.dev_mode;
-  state.passwordLogin = !!d.password_login;
   state.appUrl = d.app_url || null;
-  state.mustChangePassword = !!d.must_change_password;
+  state.nav = d.nav || [];
   state.locale = d.user.locale || 'en';
   document.documentElement.lang = state.locale;
 }
@@ -38,7 +37,16 @@ export const hasString = (key) => !!STRINGS[key];
 
 // Module level anywhere (0–3). Fine-grained checks happen server-side; this
 // only decides what to show.
-export const can = (module, level = 1) => (state.access?.modules?.[module] || 0) >= level;
+// Access check for showing or hiding controls (the server decides for real).
+// Accepts the brief's modules (read/write grants) and the internal
+// capability names (levels 0–3).
+export const can = (module, level = 1) => {
+  const a = state.access || {};
+  if (a.role === 'super_admin') return true;
+  if (a.levels && module in a.levels) return a.levels[module] >= level;
+  return ({ write: 2, read: 1 }[a.modules?.[module]] || 0) >= level;
+};
+export const isSuperAdmin = () => state.access?.role === 'super_admin';
 export const projectRole = (id) => state.access?.projects?.[id] || null;
 
 export const statusByKey = (k) => state.statuses.find(s => s.key === k);

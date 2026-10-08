@@ -37,10 +37,13 @@ crons = ["5 * * * *"]
 
 [vars]
 APP_NAME = "KMOP HQ"
-# Comma-separated. Unknown addresses from these domains may sign in only if
-# AUTO_PROVISION = "1"; anyone else must be invited by an admin first.
+# Comma-separated. Anyone with an address on these domains may sign in (as a
+# member with the default modules); anyone else must be added in Team and Access.
 ALLOWED_EMAIL_DOMAINS = "kmop.org,kmop.eu,kmop.gr"
-AUTO_PROVISION = "0"
+# Always super admin, whatever the database says, so nobody can be locked out
+# of Team and Access by a mistake in the UI. Comma-separated emails.
+SUPER_ADMINS = ""
+AUTO_PROVISION = "1"
 # "1" only for local development: magic links are returned in the API
 # response and emails stay in the outbox instead of being sent.
 DEV_MODE = "0"

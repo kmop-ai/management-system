@@ -1,12 +1,15 @@
 // People: directory, invitations, profile edits, roles and access overrides.
 
 import { ok, created, readJson, Validator, pageParams, sortClause, listMeta, param, intParam, notFound, forbidden, conflict, badRequest } from '../lib/http.js';
-import { first, all, insert, update, paged, nowIso, run, expectedVersion } from '../lib/db.js';
+import { first, all, insert, update, paged, nowIso, run, expectedVersion, stmt } from '../lib/db.js';
 import { READ, WRITE } from '../lib/rbac.js';
 import { diff, describeChanges } from '../lib/audit.js';
 import { publicUser } from './me.js';
+import { ROLES, DEFAULT_MEMBER_GRANTS } from '../lib/modules.js';
+import { queueEmail, sendOne } from '../lib/mail.js';
+import { logAuth } from './auth.js';
+import { t } from '../lib/strings.js';
 import { sha256hex, randomToken } from '../lib/auth.js';
-import { hashPassword, temporaryPassword, passwordLoginEnabled } from '../lib/password.js';
 
 const SORTABLE = { name: 'u.name', email: 'u.email', entity: 'e.code', department: 'd.name', last_login: 'u.last_login_at', created: 'u.created_at' };
 
@@ -71,7 +74,6 @@ async function getOne(ctx, { id }) {
     roles: roles.results, module_access: overrides.results,
     projects: projects.results.filter(p => visibleProjects.has(p.id)),
     can_edit: ctx.access.canEditPerson(u),
-    password_status: passwordLoginEnabled(ctx.env) ? ((await first(ctx.env.DB, `SELECT must_change FROM password_credentials WHERE user_id = ?`, u.id))?.must_change ?? null) : undefined,
     can_see_metrics: ctx.access.canSeeMetricsOf(u),
   });
 }
@@ -85,25 +87,38 @@ async function invite(ctx) {
   const v = new Validator(body).email('email', { required: true }).string('name', { required: true, min: 2, max: 120 })
     .string('title', { max: 120 }).int('entity_id').int('department_id').int('manager_id').bool('is_external')
     .string('external_org', { max: 160 }).oneOf('locale', ['en', 'el']).number('weekly_hours', { min: 0, max: 60 })
-    .string('work_days', { max: 7 }).string('role', { max: 40 }).done();
+    .string('work_days', { max: 7 }).oneOf('role', ROLES).bool('send_invite').done();
   canAdminister(ctx, v.entity_id);
   if (await first(ctx.env.DB, `SELECT id FROM users WHERE email = ?`, v.email)) throw conflict('Someone with this email already exists');
-  const role = v.role || (v.is_external ? 'external_partner' : 'team_member');
-  delete v.role;
-  // Same rules as granting a role later: it must exist, not outrank the
-  // granter, and roles that must expire cannot be given at invitation.
-  const roleRow = await first(ctx.env.DB, `SELECT * FROM roles WHERE key = ?`, role);
-  if (!roleRow) throw badRequest('Unknown role');
-  if (roleRow.rank > ctx.access.maxRank) throw forbidden('You cannot grant a role above your own');
-  if (roleRow.requires_expiry) throw badRequest(`${roleRow.label_en} access must have an end date: add the person first, then grant the role with valid_until`);
-  const id = await insert(ctx.env.DB, 'users', v);
-  await insert(ctx.env.DB, 'user_roles', { user_id: id, role, granted_by: ctx.user.id });
+  const role = v.role || (v.is_external ? 'supervisor' : 'member');
+  const sendInvite = v.send_invite; delete v.send_invite;
+  if (role === 'super_admin' && !ctx.access.isSuperAdmin) throw forbidden('Only a super admin can create another super admin');
+  const id = await insert(ctx.env.DB, 'users', { ...v, role });
+  const grants = role === 'supervisor' ? { dashboard: 'read', projects: 'read', reporting: 'read', evaluation: 'read' } : role === 'member' ? DEFAULT_MEMBER_GRANTS : {};
+  const stmts = Object.entries(grants).map(([m, a]) => stmt(ctx.env.DB, `INSERT INTO module_grants (user_id, module, access, granted_by) VALUES (?, ?, ?, ?)`, id, m, a, ctx.user.id));
+  for (const pid of Array.isArray(body.project_ids) ? body.project_ids.map(Number).filter(Number.isInteger) : []) {
+    stmts.push(stmt(ctx.env.DB, `INSERT OR IGNORE INTO supervisor_projects (user_id, project_id, granted_by) SELECT ?, id, ? FROM projects WHERE id = ? AND deleted_at IS NULL`, id, ctx.user.id, pid));
+  }
+  if (stmts.length) await ctx.env.DB.batch(stmts);
   ctx.audit({ action: 'create', type: 'user', id, label: v.name, entity_id: v.entity_id,
     summary: `${ctx.user.name} added ${v.name} (${v.email}) as ${role.replace(/_/g, ' ')}` });
-  // Without a mail server, the new person gets a temporary password that the
-  // administrator passes on; they choose their own at first sign-in.
-  const temporary_password = passwordLoginEnabled(ctx.env) ? await setTemporaryPassword(ctx, id) : null;
-  return created({ ...publicUser(await first(ctx.env.DB, `SELECT * FROM users WHERE id = ?`, id)), temporary_password });
+  let invite = null;
+  if (sendInvite) invite = await emailSignInLink(ctx, await first(ctx.env.DB, `SELECT * FROM users WHERE id = ?`, id), 72);
+  return created({ ...publicUser(await first(ctx.env.DB, `SELECT * FROM users WHERE id = ?`, id)), role, invite });
+}
+
+// Emails a personal sign-in link (used for invitations). The administrator
+// sees the real delivery outcome — they are the one who must act on it.
+export async function emailSignInLink(ctx, u, hours = 72) {
+  const token = randomToken(32);
+  await insert(ctx.env.DB, 'magic_links', { token_hash: await sha256hex(token), user_id: u.id, expires_at: new Date(Date.now() + hours * 3600000).toISOString(), ip: ctx.ip });
+  const link = `${ctx.origin}/#/auth/verify?token=${encodeURIComponent(token)}`;
+  const L = u.locale || 'en';
+  const outboxId = await queueEmail(ctx.env, { to: u.email, user_id: u.id, kind: 'magic_link',
+    subject: t(L, 'email.invite_subject'), text: t(L, 'email.invite_body', { name: u.name, inviter: ctx.user.name, link, hours }) });
+  const r = await sendOne(ctx.env, outboxId);
+  await logAuth(ctx.env, { email: u.email, user_id: u.id, method: 'link', outcome: r.ok ? 'sent' : 'send_failed', detail: r.ok ? `invitation by ${ctx.user.name}` : r.error, ip: ctx.ip });
+  return { sent: r.ok, error: r.ok ? null : r.error, ...(ctx.env.DEV_MODE === '1' ? { dev_link: link } : {}) };
 }
 
 async function patch(ctx, { id }) {
@@ -293,27 +308,6 @@ async function signInLink(ctx, { id }) {
   return ok({ link: `${ctx.origin}/#/auth/verify?token=${encodeURIComponent(token)}`, expires_in_hours: hours });
 }
 
-async function setTemporaryPassword(ctx, userId) {
-  const pw = temporaryPassword();
-  const h = await hashPassword(pw);
-  await ctx.env.DB.prepare(`INSERT INTO password_credentials (user_id, hash, salt, iterations, must_change, set_by, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)
-    ON CONFLICT (user_id) DO UPDATE SET hash = excluded.hash, salt = excluded.salt, iterations = excluded.iterations, must_change = 1, set_by = excluded.set_by, updated_at = excluded.updated_at`)
-    .bind(userId, h.hash, h.salt, h.iterations, ctx.user.id, nowIso()).run();
-  return pw;
-}
-
-// Forgotten password: an administrator issues a new temporary one. All the
-// person's sessions end; they choose a new password at next sign-in.
-async function resetPassword(ctx, { id }) {
-  if (!passwordLoginEnabled(ctx.env)) throw notFound('Password sign-in is not enabled here');
-  const u = await first(ctx.env.DB, `SELECT * FROM users WHERE id = ? AND deleted_at IS NULL AND active = 1`, Number(id));
-  if (!u) throw notFound('Person not found');
-  canAdminister(ctx, u.entity_id);
-  const pw = await setTemporaryPassword(ctx, u.id);
-  if (u.id !== ctx.user.id) await run(ctx.env.DB, `UPDATE users SET token_version = token_version + 1 WHERE id = ?`, u.id);
-  ctx.audit({ action: 'grant', type: 'user', id: u.id, label: u.name, entity_id: u.entity_id, summary: `${ctx.user.name} reset the password of ${u.name}; they choose a new one at next sign-in` });
-  return ok({ temporary_password: pw });
-}
 
 export default [
   ['GET', '/api/users', list],
@@ -329,6 +323,5 @@ export default [
   ['DELETE', '/api/users/:id/module-access/:accessId', revokeModule],
   ['GET', '/api/users/:id/export', exportData],
   ['POST', '/api/users/:id/sign-in-link', signInLink],
-  ['POST', '/api/users/:id/reset-password', resetPassword],
   ['POST', '/api/users/:id/anonymise', anonymise],
 ];

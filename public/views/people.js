@@ -5,7 +5,7 @@
 import { h, mount, icon, debounce } from '../lib/dom.js';
 import { api } from '../lib/api.js';
 import { state, t, can, local, entityById, deptById, deptName, roleLabel } from '../lib/state.js';
-import { formDialog, toast, avatar, emptyState, spinner, timeAgo, fmtDateTime, showCredentials } from '../lib/ui.js';
+import { formDialog, toast, avatar, emptyState, spinner, timeAgo, fmtDateTime } from '../lib/ui.js';
 
 export const ISO_DAYS = [1, 2, 3, 4, 5, 6, 7];
 // ISO weekday (1 = Monday) → short or long localised name.
@@ -97,7 +97,6 @@ export function addPersonDialog() {
       body.is_external = !!v.is_external;
       if (!body.is_external) delete body.external_org;
       const u = await api.post('/users', body);
-      if (u.temporary_password) showCredentials({ name: u.name, email: u.email, password: u.temporary_password });
       toast(t('people.added', { name: u.name }));
       location.hash = `#/people/${u.id}`;
     },

@@ -13,7 +13,7 @@ The entities share management but are separate legal persons. Nothing in the sys
 silently: every project (and later every contract, budget line and person-cost) belongs to exactly one
 entity, and the same person works across all three with one sign-in.
 
-**Status: Phase 0 (foundation) and Phase 1 (the PM core) are built and tested locally.** Phases 2–6 are
+**Status:** Phase 0 (foundation) and Phase 1 (the PM core) are built; the second brief's Step 1 — sign-in (links + Google) and the role/module access model — is built and tested. See *Access model (brief 2)* below. Phases 2–6 are
 designed for (see *What Phase 2 plugs into*) but not built.
 
 ---
@@ -53,9 +53,10 @@ runtime Cloudflare uses) runs on that machine and everything is stored in `local
 * **Start:** double-click **`Start KMOP HQ.command`** (first time: it asks your name, email, language and
   makes you administrator). The window shows the address for colleagues, e.g.
   `http://MacBook-Pro-Danai.local:8787`, and keeps the Mac awake while it runs.
-* **Sign-in is email + password.** Administration → People → Add person shows a temporary password to
-  pass on; at first sign-in each person chooses their own. Forgotten password: "Reset password" on the
-  person's page (or `npm run local:reset-password -- a@kmop.org`).
+* **Sign-in has no passwords:** Google Workspace, or a personal link by email (only its hash is
+  stored). Until the organisation mailbox is connected (Team and Access → Integrations), the start
+  window prints a sign-in link for the super admin, and `npm run local:link -- a@kmop.org` prints one
+  for anyone.
 * **Backups:** `npm run local:backup` (stop it first) → `backups/`; copy that folder to an external disk.
 
 * **From anywhere:** with a static office IP, a DNS record and ports 80/443 forwarded to the laptop,
@@ -63,8 +64,7 @@ runtime Cloudflare uses) runs on that machine and everything is stored in `local
   certificate. Step-by-step for the IT person: [docs/OFFICE-SERVER.md](docs/OFFICE-SERVER.md).
 
 Limits: available only while that computer is on, and no email (everything
-still lands in each person's in-app Inbox). Password sign-in is on when `LOCAL_MODE=1` or
-`PASSWORD_LOGIN=1`; the cloud deployment keeps magic links.
+still lands in each person's in-app Inbox). 
 
 ### Deploying to Cloudflare
 
@@ -234,3 +234,23 @@ lacks either language.
 6. **Rich text** is Markdown with a toolbar-less editor and safe rendering, not a WYSIWYG editor.
 7. **Not deployed.** No Cloudflare credentials (and no access to `~/artit-hq`) in this environment;
    ARTIT HQ's conventions were rebuilt from the brief. Deploy with the steps above.
+
+---
+
+## Access model (brief 2, step 1)
+
+* **Sign-in, two independent routes:** a personal link by email (SHA-256 of the token stored, single
+  use) and Google Workspace (OAuth 2.0 + PKCE). No passwords. Allowed by email domain
+  (`ALLOWED_EMAIL_DOMAINS`); super admins named in configuration (`SUPER_ADMINS`). The sign-in page
+  answers identically whatever happened; the real reason goes to `auth_events` (Team and Access →
+  Sign-in log) and the server log.
+* **Two dimensions:** a role (`super_admin`, `admin`, `member`, `supervisor`) and module access
+  (`module_grants`: one row per person per module, read or write). The sidebar is built from module
+  access on the server (`GET /api/me` → `nav`), so a page without access does not appear at all; routes
+  without the module answer "not found". Supervisors read and comment only, and only on projects listed
+  in `supervisor_projects`.
+* **Sidebar order** is per person (`users.sidebar_order`, `PUT /api/me/sidebar`).
+* **Integrations** (Team and Access): the Google OAuth client and the organisation mailbox (Gmail,
+  refresh token) used to send sign-in links and, in a later step, to read project group mail.
+* `scripts/fake-google.mjs` stands in for Google in `npm test`, so the full Google sign-in, mailbox
+  connection, invitation and "new person on a clean device" flows run in the smoke test.

@@ -33,11 +33,20 @@ for (const f of files) {
   const src = readFileSync(f, 'utf8');
   for (const m of src.matchAll(re)) if (!m[1].endsWith('_') && !m[1].endsWith('.') && !used.has(m[1])) used.set(m[1], f.replace(root, ''));
   // keys kept in data tables: ['…', 'shortcut.search'] etc.
-  for (const m of src.matchAll(/['"]((?:shortcut|help)\.[a-z0-9_]+)['"]/g)) if (!used.has(m[1])) used.set(m[1], f.replace(root, ''));
+  for (const m of src.matchAll(/['"]((?:shortcut|help)\.[a-z0-9_]+)['"]/g)) if (!m[1].endsWith('_') && !used.has(m[1])) used.set(m[1], f.replace(root, ''));
 }
 
 // Keys built at runtime: prefix → possible suffixes.
 const DYNAMIC = {
+  'page.': ['dashboard', 'projects', 'ka1', 'proposals', 'calls', 'partners', 'organisations', 'people', 'reporting', 'evaluation', 'tasks', 'team', 'help'],
+  'navgroup.': ['projects', 'development', 'relationships', 'oversight'],
+  'role.': ['super_admin', 'admin', 'member', 'supervisor'],
+  'team.tab_': ['people', 'signins', 'integrations', 'organisation'],
+  'team.access_': ['none', 'read', 'write'],
+  'team.method_': ['email', 'google'],
+  'team.outcome_': ['sent', 'send_failed', 'unknown_email', 'domain_not_allowed', 'inactive', 'rate_limited', 'denied', 'signed_in'],
+  'team.mailbox_': ['connected', 'not_connected', 'error'],
+  'help.h_': ['signin', 'sidebar', 'roles', 'supervisors', 'admin'],
   'task.priority_': ['none', 'low', 'medium', 'high', 'urgent'],
   'project.status_': ['planning', 'active', 'on_hold', 'closing', 'closed'],
   'project.kind_': ['eu', 'national', 'internal', 'other'],

@@ -11,7 +11,10 @@
 // data alone. Server-side timings from the server-timing header are
 // reported; list endpoints over 200 ms are flagged.
 
+import { startFakeGoogle } from './fake-google.mjs';
 const BASE = process.env.BASE || process.argv[2] || 'http://localhost:8787';
+const FAKE = process.env.FAKE_GOOGLE === '1';
+const fake = FAKE ? await startFakeGoogle(8798) : null;
 const stamp = Date.now().toString(36);
 let failures = 0, calls = 0;
 const timings = [];
@@ -91,7 +94,7 @@ const adminEmail = `smoke-${stamp}@kmop.org`;
 const adm = await root.post('/users', { email: adminEmail, name: `Smoke Admin ${stamp}`, entity_id: 1, role: 'super_admin' });
 await S.signIn(adminEmail);
 const me = await S.get('/me');
-check(me.data?.access?.modules?.admin === 3, 'smoke admin should have admin level 3');
+check(me.data?.access?.role === 'super_admin' && me.data?.nav?.some(p => p.key === 'team'), 'smoke admin is a super admin with Team and Access');
 await S.patch('/me', { digest_hour: 9, locale: 'en' });
 const prefs = await S.get('/me/notification-prefs');
 await S.put('/me/notification-prefs', { prefs: [{ kind: 'commented', in_app: 1, email: 'off' }] });
@@ -103,8 +106,8 @@ const mEmail = `smoke-member-${stamp}@kmop.org`, gEmail = `smoke-guest-${stamp}@
 const member = (await S.post('/users', { email: mEmail, name: `Smoke Member ${stamp}`, entity_id: 1, department_id: 2, weekly_hours: 40 })).data;
 const guest = (await S.post('/users', { email: gEmail, name: `Smoke Guest ${stamp}`, is_external: true, external_org: 'Partner NGO' })).data;
 await S.post('/users', { email: mEmail, name: 'dup' }, { expect: 409 });
-await S.post('/users', { email: `aud-${stamp}@kmop.org`, name: 'Auditor', role: 'auditor' }, { expect: 400 });
-await S.post('/users', { email: `bad-${stamp}@kmop.org`, name: 'Bad', role: 'nope' }, { expect: 400 });
+await S.post('/users', { email: `aud-${stamp}@kmop.org`, name: 'Auditor', role: 'auditor' }, { expect: 422 }); // old role names are gone
+await S.post('/users', { email: `bad-${stamp}@kmop.org`, name: 'Bad', role: 'nope' }, { expect: 422 });
 await S.get('/users?q=Smoke');
 const mu = await S.get(`/users/${member.id}`);
 await S.patch(`/users/${member.id}`, { title: 'Project Officer' }, { version: mu.data.updated_at });
@@ -116,33 +119,86 @@ await S.del(`/users/${member.id}/roles/${aud.data.id}`);
 const ma = await S.post(`/users/${member.id}/module-access`, { module: 'finance', entity_id: 1, level: 1, reason: 'smoke test' });
 await S.del(`/users/${member.id}/module-access/${ma.data.id}`);
 const M = new Client('member'); await M.signIn(mEmail);
-// Password sign-in (enabled with PASSWORD_LOGIN=1 / LOCAL_MODE=1)
-const health = (await anon.get('/health')).data;
-if (health.password_login) {
-  check(typeof member.temporary_password === 'string' && member.temporary_password.length >= 10, 'new person gets a temporary password');
-  const P1 = new Client('pw');
-  await P1.post('/auth/password-login', { email: mEmail, password: 'wrong-password' }, { expect: 401 });
-  const pl = await P1.post('/auth/password-login', { email: mEmail, password: member.temporary_password });
-  check(pl.data?.must_change_password === true, 'temporary password must be changed');
-  check((await P1.get('/me')).data?.must_change_password === true, 'me reports must_change_password');
-  await P1.post('/me/password', { password: 'short' }, { expect: 422 });
-  await P1.post('/me/password', { password: 'a-good-long-password' });
-  await P1.post('/me/password', { password: 'another-long-password', current: 'nope' }, { expect: 422 });
-  const P2 = new Client('pw2');
-  const pl2 = await P2.post('/auth/password-login', { email: mEmail, password: 'a-good-long-password' });
-  check(pl2.data?.must_change_password === false, 'own password signs in without change');
-  const rp = await S.post(`/users/${member.id}/reset-password`);
-  check(!!rp.data?.temporary_password, 'admin reset gives a new temporary password');
-  await P2.get('/me', { expect: 401 }); // reset ends their sessions
-  await M.signIn(mEmail);
-} else {
-  await anon.post('/auth/password-login', { email: mEmail, password: 'x' }, { expect: 404 });
-  await S.post('/me/password', { password: 'whatever-long' }, { expect: 404 });
-  await S.post(`/users/${member.id}/reset-password`, {}, { expect: 404 });
-}
 const G = new Client('guest'); await G.signIn(gEmail);
 await M.post('/users', { email: 'x@kmop.org', name: 'Nope' }, { expect: 403 });
 
+
+// =============================================================================
+step('sign-in routes, access model, team and access');
+const meth = await anon.get('/auth/methods');
+check(meth.data?.link === true, 'link sign-in is always available');
+const followAuthorize = async (startRes, email) => {
+  const loc = startRes.headers.get('location');
+  const r1 = await fetch(loc + '&test_email=' + encodeURIComponent(email), { redirect: 'manual' });
+  return new URL(r1.headers.get('location')).pathname + new URL(r1.headers.get('location')).search;
+};
+if (!FAKE) {
+  const gs0 = await anon.req('GET', '/auth/google/start', { expect: 302, raw: true });
+  check(/google_unavailable/.test(gs0.headers.get('location') || ''), 'Google start without a client goes back to sign-in');
+}
+const badCb = await anon.req('GET', '/auth/google/callback?state=nope&code=x', { expect: 302, raw: true });
+check(/google_denied/.test(badCb.headers.get('location') || ''), 'a forged Google callback is refused');
+const team = await S.get('/team');
+check(Array.isArray(team.data) && team.meta?.modules?.length > 5, 'team list with modules');
+await M.get('/team', { expect: 403 });
+await S.put(`/team/${member.id}/access`, { grants: { organisations: 'write', reporting: 'read', projects: 'write', tasks: 'write' } });
+await S.put(`/team/${adm.data.id}/access`, { role: 'member' }, { expect: 400 }); // cannot demote yourself
+const meM = await M.get('/me');
+check(meM.data?.nav?.some(p => p.key === 'tasks') && !meM.data?.nav?.some(p => p.key === 'team'), 'member sidebar built from module access, no Team page');
+await M.put('/me/sidebar', { order: ['tasks', 'projects'] });
+check((await M.get('/me')).data?.nav?.[0]?.key === 'tasks', 'sidebar order saved to the profile');
+const meG = await G.get('/me');
+check(meG.data?.access?.role === 'supervisor' && !meG.data?.nav?.some(p => p.key === 'tasks'), 'supervisor gets read-only pages, no Tasks');
+await S.get('/team/auth-events?outcome=problems');
+const integ = await S.get('/integrations');
+check(Array.isArray(integ.data?.redirect_uris) && integ.data.redirect_uris.length === 2, 'integrations show the redirect URIs to register');
+await M.get('/integrations', { expect: 403 });
+if (FAKE) {
+  await S.put('/integrations/google', { client_id: 'fake-client.apps.googleusercontent.com', client_secret: 'shh' });
+  // Google sign-in for a new person from an allowed domain → created as a member
+  const anon2 = new Client('google-newbie');
+  const gstart = await anon2.req('GET', '/auth/google/start?next=%23%2Fhelp', { expect: 302, raw: true });
+  const cb = await followAuthorize(gstart, `newbie-${stamp}@kmop.org`);
+  const gcb = await anon2.req('GET', cb.replace(/^\/api/, ''), { expect: 302, raw: true });
+  check(/#\/help$/.test(gcb.headers.get('location') || ''), 'Google sign-in returns to where the person was going');
+  const gme = await anon2.get('/me');
+  check(gme.data?.user?.email === `newbie-${stamp}@kmop.org` && gme.data?.access?.role === 'member', 'Google sign-in created a member');
+  // A domain that is not allowed is refused, with the reason logged
+  const anon3 = new Client('google-outsider');
+  const gst3 = await anon3.req('GET', '/auth/google/start', { expect: 302, raw: true });
+  const cb3 = await followAuthorize(gst3, `outsider-${stamp}@gmail.com`);
+  const r3 = await anon3.req('GET', cb3.replace(/^\/api/, ''), { expect: 302, raw: true });
+  check(/google_denied/.test(r3.headers.get('location') || ''), 'Google sign-in from a domain that is not allowed is refused');
+  const ev = await S.get('/team/auth-events?outcome=denied');
+  check(ev.data?.some(e => e.email === `outsider-${stamp}@gmail.com` && /not allowed/.test(e.detail || '')), 'the real refusal reason is in the sign-in log');
+  // Connect the organisation mailbox, then send through it
+  const mstart = await S.req('GET', '/integrations/gmail/start', { expect: 302, raw: true });
+  const mcb = await followAuthorize(mstart, 'hq@kmop.org');
+  const mres = await S.req('GET', mcb.replace(/^\/api/, ''), { expect: 302, raw: true });
+  check(/connected=1/.test(mres.headers.get('location') || ''), 'mailbox connected');
+  check((await S.get('/integrations')).data?.gmail?.status === 'connected', 'mailbox shows as connected');
+  const tst = await S.post('/integrations/gmail/test');
+  check(tst.data?.ok === true, 'test email sent through the mailbox');
+  // Create a new person, email them a link, sign in as them on a clean device
+  const inv = await S.post('/users', { email: `fresh-${stamp}@kmop.org`, name: `Fresh Person ${stamp}`, role: 'member', send_invite: true });
+  check(inv.data?.invite?.sent === true, 'invitation link sent');
+  const mail = fake.messages.filter(m => m.to === `fresh-${stamp}@kmop.org`).pop();
+  const token = /token=([A-Za-z0-9_-]+)/.exec(mail?.text || '')?.[1];
+  const clean = new Client('clean-device');
+  await clean.post('/auth/verify', { token });
+  const cme = await clean.get('/me');
+  check(cme.data?.user?.email === `fresh-${stamp}@kmop.org`, 'new person signed in from the emailed link on a clean device');
+  await S.post(`/team/${inv.data.id}/invite`);
+  await S.del('/integrations/gmail');
+} else {
+  await S.req('GET', '/integrations/gmail/start', { expect: 302, raw: true });
+  await S.put('/integrations/google', { client_id: 'not-a-client' }, { expect: 400 });
+  const tst = await S.post('/integrations/gmail/test');
+  check(tst.data?.ok === false, 'without a mailbox the test reports why it could not send');
+  await S.post(`/team/${member.id}/invite`);
+  await S.del('/integrations/gmail');
+}
+await S.req('GET', '/integrations/gmail/callback?state=nope', { expect: 302, raw: true });
 // =============================================================================
 step('organisation config');
 const ents = await S.get('/entities');
@@ -173,7 +229,7 @@ await S.get('/task-statuses');
 step('projects, members, sections, allocations');
 const start = new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
 const end = new Date(Date.now() + 300 * 86400000).toISOString().slice(0, 10);
-await M.post('/projects', { name: 'Not allowed', entity_id: 1 }, { expect: 403 });
+await G.post('/projects', { name: 'Not allowed', entity_id: 1 }, { expect: 403 }); // supervisors never write
 await S.post('/projects', { name: 'No entity' }, { expect: 400 });
 const proj = (await S.post('/projects', { name: `Smoke project ${stamp}`, code: 'SMOKE', entity_id: 1, start_date: start, end_date: end, kind: 'eu', funder: 'Erasmus+ KA220-ADU' })).data;
 await S.get('/projects?member=me&sort=-start');
@@ -416,5 +472,6 @@ const slowLists = timings.filter(x => x.list && x.ms > 200);
 const p95 = timings.map(x => x.ms).sort((a, b) => a - b)[Math.floor(timings.length * 0.95)] || 0;
 console.log(`\n${calls} calls, ${compiled.length - missed.length - 1}/${compiled.length - 1} routes covered, p95 server time ${p95} ms`);
 for (const s of slowLists) console.warn(`  slow: ${s.what} ${s.ms} ms`);
+if (fake) fake.close();
 if (failures) { console.error(`\nSMOKE FAILED: ${failures} problem(s)`); process.exit(1); }
 console.log('SMOKE OK');

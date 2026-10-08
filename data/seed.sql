@@ -519,3 +519,18 @@ INSERT INTO task_templates (id, name, body, created_by) VALUES (2, 'Quarterly ti
 INSERT INTO saved_views (user_id, scope, name, view_type, config) VALUES (3, 'project:1', 'WP3 — open', 'list', '{"filters":{"section_id":"3","state":"open"}}');
 INSERT INTO saved_views (user_id, scope, name, view_type, config) VALUES (3, 'my_tasks', 'High priority', 'list', '{"filters":{"priority":"high,urgent"}}');
 INSERT INTO saved_views (user_id, scope, name, view_type, config, shared) VALUES (7, 'project:2', 'Board by status', 'board', '{"group":"status"}', 1);
+
+-- Access model (role + module grants + supervised projects) — same rules as migration 005
+UPDATE users SET role = 'super_admin' WHERE id IN (SELECT user_id FROM user_roles WHERE role = 'super_admin' AND revoked_at IS NULL);
+UPDATE users SET role = 'admin' WHERE role = 'member' AND id IN (SELECT user_id FROM user_roles WHERE role IN ('general_manager','upper_management') AND revoked_at IS NULL);
+UPDATE users SET role = 'supervisor' WHERE role = 'member' AND (is_external = 1 OR id IN (SELECT user_id FROM user_roles WHERE role IN ('auditor','external_partner') AND revoked_at IS NULL));
+INSERT OR IGNORE INTO module_grants (user_id, module, access)
+  SELECT u.id, m.value, 'write' FROM users u, json_each('["dashboard","projects","ka1","proposals","calls","partners","organisations","people","reporting","evaluation","tasks"]') m
+   WHERE u.role IN ('member','admin') AND u.deleted_at IS NULL;
+INSERT OR IGNORE INTO module_grants (user_id, module, access)
+  SELECT u.id, m.value, 'read' FROM users u, json_each('["dashboard","projects","reporting","evaluation"]') m
+   WHERE u.role = 'supervisor' AND u.deleted_at IS NULL;
+INSERT OR IGNORE INTO supervisor_projects (user_id, project_id)
+  SELECT pm.user_id, pm.project_id FROM project_members pm JOIN users u ON u.id = pm.user_id
+   WHERE u.role = 'supervisor' AND pm.removed_at IS NULL;
+DELETE FROM module_grants WHERE user_id = 11 AND module NOT IN ('projects','tasks');

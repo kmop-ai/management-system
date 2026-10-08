@@ -1,119 +1,108 @@
 // Access control.
 //
-// Three layers, evaluated in this order:
-//   1. Project membership (pm / member / viewer / guest) — the everyday case.
-//      Members see and work on their own projects whatever their role.
-//   2. Role grants (user_roles × role_module_access) — scoped to all entities,
-//      one entity, or one department. This is what lets the GM see every
-//      project and a Greek finance lead see only their entity's money.
-//   3. Per-person overrides (module_access) — replace the role-derived level
-//      for a module in a scope; they can raise or lower it.
+// Two separate dimensions, as the brief defines them:
+//   * ROLE (users.role): super_admin, admin, member, supervisor.
+//       super_admin — everything, including Team and Access. Also forced
+//                     from configuration (SUPER_ADMINS) so the people who run
+//                     the system cannot be locked out from the UI.
+//       admin       — write on every module except Team and Access.
+//       member      — exactly the modules granted to them.
+//       supervisor  — read and comment only, on granted modules AND on the
+//                     projects named in supervisor_projects. Never writes.
+//   * MODULE access (module_grants): one row per person per module, read or
+//     write. No row, no page — the sidebar is built from this.
+// Project membership (pm / member / viewer) still decides who manages and
+// works on a given project, inside the projects module.
 //
-// Everything is loaded once per request in a single D1 batch, then answered
-// from memory. List endpoints get SQL predicates from here so the filtering
-// happens in the database, never by fetching rows and dropping them.
+// Everything is loaded once per request in one D1 batch; list endpoints get
+// SQL predicates from here so filtering happens in the database.
 
 import { forbidden } from './http.js';
 import { jsonIds } from './db.js';
+import { MODULES, SUPERVISOR_MODULES } from './modules.js';
 
 export const NONE = 0, READ = 1, WRITE = 2, ADMIN = 3;
 
-export async function loadAccess(db, user) {
-  const today = new Date().toISOString().slice(0, 10);
-  const [roles, levels, overrides, members, entities, settings] = await db.batch([
-    db.prepare(`SELECT ur.id, ur.role, ur.entity_id, ur.department_id, ur.valid_until, r.rank
-                  FROM user_roles ur JOIN roles r ON r.key = ur.role
-                 WHERE ur.user_id = ? AND ur.revoked_at IS NULL
-                   AND (ur.valid_from IS NULL OR ur.valid_from <= ?)
-                   AND (ur.valid_until IS NULL OR ur.valid_until >= ?)`).bind(user.id, today, today),
-    db.prepare(`SELECT rma.role, rma.module, rma.level FROM role_module_access rma
-                 WHERE rma.level > 0 AND rma.role IN (
-                   SELECT role FROM user_roles WHERE user_id = ? AND revoked_at IS NULL
-                     AND (valid_from IS NULL OR valid_from <= ?) AND (valid_until IS NULL OR valid_until >= ?))`).bind(user.id, today, today),
-    db.prepare(`SELECT module, entity_id, level FROM module_access
-                 WHERE user_id = ? AND revoked_at IS NULL AND (valid_until IS NULL OR valid_until >= ?)`).bind(user.id, today),
+export function configSuperAdmins(env) {
+  return (env.SUPER_ADMINS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+}
+
+export async function loadAccess(db, user, env = {}) {
+  const [grants, members, supervised, entities, settings] = await db.batch([
+    db.prepare(`SELECT module, access FROM module_grants WHERE user_id = ?`).bind(user.id),
     db.prepare(`SELECT pm.project_id, pm.role FROM project_members pm JOIN projects p ON p.id = pm.project_id
                  WHERE pm.user_id = ? AND pm.removed_at IS NULL AND p.deleted_at IS NULL`).bind(user.id),
+    db.prepare(`SELECT sp.project_id FROM supervisor_projects sp JOIN projects p ON p.id = sp.project_id
+                 WHERE sp.user_id = ? AND p.deleted_at IS NULL`).bind(user.id),
     db.prepare(`SELECT id FROM entities WHERE deleted_at IS NULL`),
     db.prepare(`SELECT key, value FROM settings`),
   ]);
-  return new Access(user, roles.results, levels.results, overrides.results, members.results,
+  const role = configSuperAdmins(env).includes(String(user.email).toLowerCase()) ? 'super_admin' : (user.role || 'member');
+  return new Access(user, role, grants.results, members.results, supervised.results.map(r => r.project_id),
     entities.results.map(e => e.id), Object.fromEntries(settings.results.map(s => [s.key, s.value])));
 }
 
 export class Access {
-  constructor(user, roles, levels, overrides, members, entityIds, settings) {
+  constructor(user, role, grants, members, supervised, entityIds, settings) {
     this.user = user;
-    this.roles = roles;
+    this.role = role;
     this.settings = settings;
     this.entityIds = entityIds;
-    this.maxRank = roles.reduce((m, r) => Math.max(m, r.rank), 0);
-    // grants[module] = [{entity_id, department_id, level}]
-    this.grants = {};
-    for (const r of roles) {
-      for (const l of levels) {
-        if (l.role !== r.role) continue;
-        (this.grants[l.module] ||= []).push({ entity_id: r.entity_id, department_id: r.department_id, level: l.level });
-      }
-    }
-    this.overrides = {};
-    for (const o of overrides) (this.overrides[o.module] ||= []).push(o);
+    this.grants = Object.fromEntries(grants.map(g => [g.module, g.access]));
     this.membership = new Map(members.map(m => [m.project_id, m.role]));
+    this.supervised = new Set(supervised);
+    // Old role ranks, still used where one person grants something to another.
+    this.maxRank = { super_admin: 100, admin: 90, member: 20, supervisor: 5 }[role] || 0;
   }
 
-  hasRole(...keys) { return this.roles.some(r => keys.includes(r.role)); }
-  get isSuperAdmin() { return this.hasRole('super_admin'); }
+  get isSuperAdmin() { return this.role === 'super_admin'; }
+  get isAdmin() { return this.role === 'super_admin' || this.role === 'admin'; }
+  get isSupervisor() { return this.role === 'supervisor'; }
+  hasRole(...keys) { return keys.includes(this.role); }
 
-  // Level for a module at a point in the organisation. entityId/deptId
-  // undefined asks "anywhere at all" (e.g. may this person create projects?).
-  level(module, entityId, deptId) {
-    if (entityId === undefined) {
-      let best = NONE;
-      for (const e of this.entityIds) best = Math.max(best, this.level(module, e, null));
-      for (const g of this.grants[module] || []) if (g.department_id != null) best = Math.max(best, g.level);
-      const ov = this.overrides[module] || [];
-      if (!this.entityIds.length) for (const o of ov) best = Math.max(best, o.level);
-      return best;
+  // The effective access to one of the brief's modules: 'write' | 'read' | null.
+  grant(module) {
+    const def = MODULES.find(m => m.key === module);
+    if (def?.everyone) return 'read';
+    if (this.role === 'super_admin') return 'write';
+    if (def?.superAdminOnly) return null;
+    if (this.role === 'admin') return 'write';
+    const g = this.grants[module] || null;
+    if (this.role === 'supervisor') return g && SUPERVISOR_MODULES.includes(module) ? 'read' : null;
+    return g;
+  }
+
+  // Numeric level (0 none, 1 read, 2 write, 3 admin) for a module key —
+  // the brief's modules, plus the internal capability names the routes use.
+  level(module) {
+    if (this.role === 'super_admin') return ADMIN;
+    const g = (k) => ({ write: WRITE, read: READ })[this.grant(k)] || NONE;
+    switch (module) {
+      case 'projects':        // see every project, not only one's own
+        return this.role === 'admin' ? WRITE : this.role === 'member' && this.grant('projects') ? READ : NONE;
+      case 'project_create':  return this.role === 'supervisor' ? NONE : g('projects') >= WRITE ? WRITE : NONE;
+      case 'templates':       return this.role === 'supervisor' ? NONE : g('projects');
+      case 'people':          // staff directory and capacity (not the CRM)
+        return this.role === 'admin' ? WRITE : this.role === 'member' ? READ : NONE;
+      case 'people_metrics':  return this.role === 'admin' ? READ : NONE;
+      case 'admin':           return NONE; // Team and Access: super admin only
+      case 'audit':           return this.role === 'admin' ? READ : NONE;
+      case 'pipeline':        return g('proposals');
+      case 'portfolio':       return g('reporting');
+      case 'finance': case 'salaries': case 'rules': return this.role === 'admin' ? READ : NONE;
+      default:                return g(module);
     }
-    const ov = this.overrides[module];
-    if (ov && ov.length) {
-      const specific = ov.find(o => o.entity_id === entityId) || ov.find(o => o.entity_id == null);
-      if (specific) return specific.level;
-    }
-    return this._roleLevel(module, entityId, deptId);
   }
 
-  _roleLevel(module, entityId, deptId) {
-    let best = NONE;
-    for (const g of this.grants[module] || []) {
-      if (entityId !== undefined) {
-        if (g.entity_id != null && g.entity_id !== entityId) continue;
-        if (g.department_id != null && g.department_id !== deptId) continue;
-      }
-      if (g.level > best) best = g.level;
-    }
-    return best;
+  require(module, min = READ) {
+    if (this.level(module) < min) throw forbidden(`Requires ${['', 'read', 'write', 'admin'][min]} access to ${module}`);
   }
 
-  require(module, min = READ, entityId, deptId) {
-    if (this.level(module, entityId, deptId) < min) throw forbidden(`Requires ${['', 'read', 'write', 'admin'][min]} access to ${module}`);
-  }
-
-  // Where (which entities, which departments) this person holds at least
-  // `min` on `module`. Used to build SQL predicates.
+  // Kept for callers written for the entity-scoped model: access is no
+  // longer entity-scoped, so a level anywhere is a level everywhere.
   scope(module, min = READ) {
-    const entities = [], departments = [];
-    const ov = this.overrides[module] || [];
-    for (const e of this.entityIds) {
-      const o = ov.find(x => x.entity_id === e) || ov.find(x => x.entity_id == null);
-      if (o) { if (o.level >= min) entities.push(e); continue; }
-      const wide = (this.grants[module] || []).some(g => g.level >= min && g.department_id == null && (g.entity_id == null || g.entity_id === e));
-      if (wide) entities.push(e);
-    }
-    for (const g of this.grants[module] || []) {
-      if (g.level >= min && g.department_id != null && !departments.includes(g.department_id)) departments.push(g.department_id);
-    }
-    return { entities, departments, all: entities.length === this.entityIds.length && this.entityIds.length > 0 };
+    const ok = this.level(module) >= min;
+    return { entities: ok ? [...this.entityIds] : [], departments: [], all: ok };
   }
 
   // ---- projects ----------------------------------------------------------
@@ -121,16 +110,18 @@ export class Access {
   projectRole(projectId) { return this.membership.get(projectId) || null; }
 
   project(p) {
+    if (this.role === 'supervisor') {
+      const see = this.supervised.has(p.id) && !!this.grant('projects');
+      return { role: see ? 'supervisor' : null, see, work: false, manage: false, guest: see, comment: see, supervisor: true };
+    }
     const role = this.projectRole(p.id);
-    const scoped = this.level('projects', p.entity_id, p.department_id);
+    const scoped = this.level('projects');
     const sameEntity = p.visibility === 'entity' && !this.user.is_external && this.user.entity_id === p.entity_id;
     const manage = role === 'pm' || scoped >= WRITE;
     const work = manage || role === 'member';
     const see = work || role === 'viewer' || role === 'guest' || scoped >= READ || sameEntity;
-    // A guest is someone whose only window into this project is guest
-    // membership; they never see tasks flagged internal.
     const guest = role === 'guest' && scoped < READ;
-    return { role, see, work, manage, guest, comment: see && role !== 'viewer' };
+    return { role, see, work, manage, guest, comment: see && role !== 'viewer' || scoped >= READ };
   }
 
   requireProject(p, what = 'see') {
@@ -140,29 +131,27 @@ export class Access {
     return a;
   }
 
-  // SQL predicate over a projects alias: true for every project this person
-  // can see. Binds three parameters, returned in order.
+  // SQL predicate over a projects alias: every project this person can see.
   projectsVisibleSql(alias = 'p') {
-    const s = this.scope('projects', READ);
-    const memberIds = [...this.membership.keys()];
-    const sql = `(${alias}.id IN (SELECT value FROM json_each(?))
-      OR ${alias}.entity_id IN (SELECT value FROM json_each(?))
-      OR ${alias}.department_id IN (SELECT value FROM json_each(?))
+    if (this.role === 'supervisor') {
+      const ids = this.grant('projects') ? [...this.supervised] : [];
+      return { sql: `(${alias}.id IN (SELECT value FROM json_each(?)) OR 0 = ? OR 0 = ?)`, params: [jsonIds(ids), 1, 1] };
+    }
+    const all = this.level('projects') >= READ ? 1 : 0;
+    const sql = `(${alias}.id IN (SELECT value FROM json_each(?)) OR ? = 1
       OR (${alias}.visibility = 'entity' AND ${alias}.entity_id = ?))`;
-    const params = [jsonIds(memberIds), jsonIds(s.entities), jsonIds(s.departments),
-      this.user.is_external ? -1 : (this.user.entity_id ?? -1)];
-    return { sql, params };
+    return { sql, params: [jsonIds([...this.membership.keys()]), all, this.user.is_external ? -1 : (this.user.entity_id ?? -1)] };
   }
 
+  // Projects where internal tasks must stay hidden: guest memberships, and
+  // every project seen as a supervisor (funders do not read our chasing).
   guestProjectIds() {
-    const out = [];
+    const out = [...this.supervised];
     for (const [pid, role] of this.membership) if (role === 'guest') out.push(pid);
     return out;
   }
 
-  // SQL predicate over tasks t LEFT JOIN projects p: every task this person
-  // can see. Personal tasks are private to creator, assignee and followers;
-  // project tasks follow project visibility, minus internal ones for guests.
+  // SQL predicate over tasks t LEFT JOIN projects p: every task this person can see.
   tasksVisibleSql(t = 't', p = 'p') {
     const pv = this.projectsVisibleSql(p);
     const uid = this.user.id;
@@ -173,46 +162,43 @@ export class Access {
     return { sql, params: [uid, uid, uid, ...pv.params, jsonIds(this.guestProjectIds())] };
   }
 
-  // Access to one task, given the task row and (for project tasks) its project.
   task(t, p, { following = false } = {}) {
     if (!t.project_id) {
       const mine = t.created_by === this.user.id || t.assignee_id === this.user.id;
-      return { see: mine || following, edit: mine, comment: mine || following, manage: t.created_by === this.user.id };
+      return { see: mine || following, edit: mine && !this.isSupervisor, comment: mine || following, manage: t.created_by === this.user.id };
     }
     const a = this.project(p);
     if (!a.see || (a.guest && t.is_internal)) return { see: false, edit: false, comment: false, manage: false };
-    // Guests may move along what is assigned to them — that is the point of inviting them.
-    const edit = a.work || (t.assignee_id === this.user.id && a.role !== 'viewer');
-    return { see: true, edit, comment: a.comment, manage: a.manage || t.created_by === this.user.id && a.work };
+    const edit = !a.supervisor && (a.work || (t.assignee_id === this.user.id && a.role !== 'viewer'));
+    return { see: true, edit, comment: a.comment, manage: a.manage || (t.created_by === this.user.id && a.work) };
   }
 
   // ---- people ------------------------------------------------------------
 
-  // Evaluation metrics about a person. Restricted by role (people_metrics);
-  // the person themselves sees their own numbers unless an admin has
-  // deliberately switched that off in settings.
   canSeeMetricsOf(target) {
     if (target.id === this.user.id) return this.settings.people_metrics_self_visible !== '0' || this.level('people_metrics') >= READ;
-    return this.level('people_metrics', target.entity_id ?? null, target.department_id ?? null) >= READ;
+    return this.level('people_metrics') >= READ;
   }
 
   canSeePerson(target) {
     if (target.id === this.user.id) return true;
-    if (this.user.is_external) return false; // guests only see co-members, via project member lists
-    return this.level('people', target.entity_id ?? null, target.department_id ?? null) >= READ;
+    if (this.user.is_external || this.isSupervisor) return false;
+    return this.level('people') >= READ;
   }
 
-  canEditPerson(target) {
-    return this.level('admin', target.entity_id ?? null) >= WRITE || this.level('people', target.entity_id ?? null, target.department_id ?? null) >= WRITE;
-  }
+  canEditPerson() { return this.isSuperAdmin; }
 
   summary() {
     const modules = {};
-    for (const m of new Set([...Object.keys(this.grants), ...Object.keys(this.overrides)])) modules[m] = this.level(m);
+    for (const m of MODULES) { const g = this.grant(m.key); if (g) modules[m.key] = g; }
+    const levels = {};
+    for (const k of ['projects', 'project_create', 'people', 'people_metrics', 'templates', 'admin', 'audit']) levels[k] = this.level(k);
     return {
-      roles: this.roles.map(r => ({ role: r.role, entity_id: r.entity_id, department_id: r.department_id, valid_until: r.valid_until })),
-      modules,
+      role: this.role,
+      modules,                      // the brief's modules: { key: 'read' | 'write' }
+      levels,                       // internal capabilities, 0–3
       projects: Object.fromEntries(this.membership),
+      supervised_projects: [...this.supervised],
       people_metrics_self_visible: this.settings.people_metrics_self_visible !== '0',
     };
   }

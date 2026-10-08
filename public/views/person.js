@@ -6,7 +6,7 @@
 import { h, mount, icon, todayStr } from '../lib/dom.js';
 import { api, listAll } from '../lib/api.js';
 import { state, t, can, entityById, deptById, deptName, roleLabel, moduleLabel } from '../lib/state.js';
-import { formDialog, confirmDialog, showError, toast, avatar, fmtDate, fmtDateTime, timeAgo, emptyState, spinner, modal, copyText, showCredentials } from '../lib/ui.js';
+import { formDialog, confirmDialog, showError, toast, avatar, fmtDate, fmtDateTime, timeAgo, emptyState, spinner, modal, copyText } from '../lib/ui.js';
 import { ISO_DAYS, weekdayName, workDaysText } from './people.js';
 
 const LEAVE_KINDS = ['annual', 'sick', 'training', 'unpaid', 'other'];
@@ -322,10 +322,6 @@ function accessSection(u, self) {
         if (!await confirmDialog(t('access.revoke_sessions_confirm', { name: u.name }), { okLabel: t('access.revoke_sessions') })) return;
         try { await api.post(`/users/${u.id}/revoke-sessions`); toast(t('access.sessions_revoked')); if (self) location.reload(); } catch (e) { showError(e); }
       } }, icon('key', 14), t('access.revoke_sessions')),
-      u.active && state.passwordLogin ? h('button', { class: 'btn', onclick: async () => {
-        if (!await confirmDialog(t('creds.reset_confirm', { name: u.name }), { okLabel: t('creds.reset'), danger: false })) return;
-        try { const r = await api.post(`/users/${u.id}/reset-password`); showCredentials({ name: u.name, email: u.email, password: r.temporary_password }); } catch (e) { showError(e); }
-      } }, icon('key', 14), t('creds.reset')) : null,
       u.active ? h('button', { class: 'btn', onclick: async () => {
         try {
           const r = await api.post(`/users/${u.id}/sign-in-link`, { hours: 24 });

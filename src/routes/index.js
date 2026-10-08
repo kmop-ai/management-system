@@ -12,7 +12,8 @@ import comments from './comments.js';
 import templates from './templates.js';
 import people from './people.js';
 import misc from './misc.js';
+import team from './team.js';
 
 export default [
-  ...auth, ...me, ...users, ...org, ...feed, ...projects, ...tasks, ...comments, ...templates, ...people, ...misc,
+  ...auth, ...me, ...users, ...org, ...feed, ...projects, ...tasks, ...comments, ...templates, ...people, ...misc, ...team,
 ];

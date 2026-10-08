@@ -277,20 +277,3 @@ export function hours(n) {
 export async function copyText(s) {
   try { await navigator.clipboard.writeText(s); toast(t('common.copied')); } catch { toast(s); }
 }
-
-// After adding a person or resetting a password on an installation without
-// email: show what to pass on, once. The person picks their own password at
-// first sign-in, so this temporary one is only good once.
-export function showCredentials({ name, email, password }) {
-  const address = state.appUrl || location.origin;
-  const text = `KMOP HQ\n${address}\n${t('creds.email')}: ${email}\n${t('creds.temp_password')}: ${password}`;
-  const row = (k, v) => h('tr', null, h('th', { scope: 'row', style: { textAlign: 'left', paddingRight: '12px' } }, k), h('td', { class: 'mono', style: { fontSize: '15px' } }, v));
-  return modal({
-    title: t('creds.title', { name }),
-    body: h('div', { class: 'col gap-12' },
-      h('p', { class: 'small' }, t('creds.lead', { name })),
-      h('table', null, h('tbody', null, row(t('creds.address'), address), row(t('creds.email'), email), row(t('creds.temp_password'), password))),
-      h('p', { class: 'muted xs' }, t('creds.once'))),
-    footer: [h('button', { class: 'btn primary', onclick: () => copyText(text) }, t('creds.copy'))],
-  });
-}
