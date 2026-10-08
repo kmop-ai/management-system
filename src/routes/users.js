@@ -204,6 +204,68 @@ async function revokeModule(ctx, { id, accessId }) {
   return ok({ id: r.id, revoked: true });
 }
 
+// ---- GDPR: export and erasure -------------------------------------------
+
+// Everything the system holds about a person, as one JSON file. Available to
+// the person themselves and to administrators; the export itself is audited.
+async function exportData(ctx, { id }) {
+  const u = await first(ctx.env.DB, `SELECT * FROM users WHERE id = ?`, Number(id));
+  if (!u) throw notFound('Person not found');
+  if (u.id !== ctx.user.id) canAdminister(ctx, u.entity_id);
+  const db = ctx.env.DB;
+  const q = (sql) => db.prepare(sql).bind(u.id);
+  const [roles, members, tasksAssigned, tasksCreated, comments, leave, allocations, notifications, prefs, audit] = await db.batch([
+    q(`SELECT role, entity_id, department_id, valid_from, valid_until, created_at, revoked_at FROM user_roles WHERE user_id = ?`),
+    q(`SELECT m.project_id, p.name AS project, m.role, m.added_at, m.removed_at FROM project_members m JOIN projects p ON p.id = m.project_id WHERE m.user_id = ?`),
+    q(`SELECT id, project_id, title, status, start_date, due_date, estimate_hours, completed_at, assigned_at FROM tasks WHERE assignee_id = ? AND deleted_at IS NULL`),
+    q(`SELECT id, project_id, title, created_at FROM tasks WHERE created_by = ? AND deleted_at IS NULL`),
+    q(`SELECT id, object_type, object_id, body, created_at, edited_at FROM comments WHERE author_id = ? AND deleted_at IS NULL`),
+    q(`SELECT start_date, end_date, kind, half_day, note FROM leave WHERE user_id = ? AND deleted_at IS NULL`),
+    q(`SELECT project_id, start_date, end_date, fte_pct, person_months FROM allocations WHERE user_id = ? AND deleted_at IS NULL`),
+    q(`SELECT kind, title, body, created_at, read_at FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT 2000`),
+    q(`SELECT kind, in_app, email FROM notification_prefs WHERE user_id = ?`),
+    q(`SELECT at, action, object_type, object_id, summary FROM audit_log WHERE actor_id = ? ORDER BY id DESC LIMIT 5000`),
+  ]);
+  const out = {
+    exported_at: nowIso(), exported_by: ctx.user.name,
+    profile: publicUser(u),
+    roles: roles.results, project_memberships: members.results, tasks_assigned: tasksAssigned.results, tasks_created: tasksCreated.results,
+    comments: comments.results, leave: leave.results, allocations: allocations.results, notifications: notifications.results,
+    notification_preferences: prefs.results, actions_in_audit_log: audit.results,
+  };
+  ctx.audit({ action: 'export', type: 'user', id: u.id, label: u.name, entity_id: u.entity_id, summary: `${ctx.user.name} exported the personal data held about ${u.name}` });
+  return new Response(JSON.stringify(out, null, 2), { headers: {
+    'content-type': 'application/json; charset=utf-8',
+    'content-disposition': `attachment; filename="kmop-hq-personal-data-${u.id}.json"`, 'cache-control': 'no-store',
+  } });
+}
+
+// Right to erasure for someone who has left: the account is anonymised, not
+// deleted, so tasks, comments and the audit trail keep a consistent shape.
+// The audit log keeps the sentences written at the time — it is retained
+// under the funders' audit obligations, which the GDPR allows.
+async function anonymise(ctx, { id }) {
+  const u = await first(ctx.env.DB, `SELECT * FROM users WHERE id = ?`, Number(id));
+  if (!u) throw notFound('Person not found');
+  if (ctx.access.level('admin', u.entity_id ?? null) < 3) throw forbidden('Only super administrators can anonymise a person');
+  if (u.active && !u.deleted_at) throw badRequest('Deactivate the person first; anonymising is for people who have left');
+  const label = `Former member #${u.id}`;
+  const db = ctx.env.DB, ts = nowIso();
+  await db.batch([
+    db.prepare(`UPDATE users SET name = ?, email = ?, title = NULL, external_org = NULL, timezone = NULL, manager_id = NULL, active = 0,
+                token_version = token_version + 1, deleted_at = COALESCE(deleted_at, ?), updated_at = ? WHERE id = ?`).bind(label, `anonymised-${u.id}@invalid`, ts, ts, u.id),
+    db.prepare(`DELETE FROM auth_identities WHERE user_id = ?`).bind(u.id),
+    db.prepare(`DELETE FROM magic_links WHERE user_id = ?`).bind(u.id),
+    db.prepare(`DELETE FROM notification_prefs WHERE user_id = ?`).bind(u.id),
+    db.prepare(`DELETE FROM notifications WHERE user_id = ?`).bind(u.id),
+    db.prepare(`UPDATE leave SET note = NULL, kind = 'other' WHERE user_id = ?`).bind(u.id),
+    db.prepare(`UPDATE email_outbox SET to_email = ?, body_text = '[removed]', body_html = NULL WHERE user_id = ?`).bind(`anonymised-${u.id}@invalid`, u.id),
+    db.prepare(`DELETE FROM task_followers WHERE user_id = ?`).bind(u.id),
+  ]);
+  ctx.audit({ action: 'anonymise', type: 'user', id: u.id, label, entity_id: u.entity_id, summary: `${ctx.user.name} anonymised a former member's account (#${u.id}) under the right to erasure` });
+  return ok({ id: u.id, anonymised: true });
+}
+
 export default [
   ['GET', '/api/users', list],
   ['POST', '/api/users', invite],
@@ -216,4 +278,6 @@ export default [
   ['DELETE', '/api/users/:id/roles/:roleId', revokeRole],
   ['POST', '/api/users/:id/module-access', grantModule],
   ['DELETE', '/api/users/:id/module-access/:accessId', revokeModule],
+  ['GET', '/api/users/:id/export', exportData],
+  ['POST', '/api/users/:id/anonymise', anonymise],
 ];

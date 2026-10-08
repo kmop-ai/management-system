@@ -363,8 +363,14 @@ await S.post(`/projects/${proj.id}/restore`);
 await S.del(`/projects/${proj.id}`);
 await S.post(`/users/${member.id}/revoke-sessions`);
 await M.get('/me', { expect: 401 });
+await M.get(`/users/${member.id}/export`, { expect: 401 });  // sessions were revoked above
+const ex = await S.req('GET', `/users/${member.id}/export`, { raw: true });
+check(JSON.parse(ex.data).profile?.email === mEmail, 'personal data export');
+await S.post(`/users/${member.id}/anonymise`, {}, { expect: 400 });   // still active
 await S.del(`/users/${guest.id}`);
 await S.del(`/users/${member.id}`);
+await S.post(`/users/${member.id}/anonymise`);
+await S.get(`/users?q=anonymised&active=all`);
 await root.post('/auth/logout');
 await S.post('/auth/logout-everywhere');
 await S.get('/me', { expect: 401 });
