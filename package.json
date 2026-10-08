@@ -1,0 +1,20 @@
+{
+  "name": "kmop-hq",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "KMOP HQ — project management and management reporting for the KMOP entities.",
+  "scripts": {
+    "dev": "wrangler dev --test-scheduled",
+    "db:reset": "rm -rf .wrangler/state && npm run db:migrate && npm run db:seed",
+    "db:migrate": "node scripts/check-migrations.mjs && wrangler d1 migrations apply kmop-hq --local",
+    "db:seed": "wrangler d1 execute kmop-hq --local --file data/seed.sql",
+    "check": "node scripts/check-migrations.mjs && node scripts/check-schema.mjs && node scripts/check-i18n.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "test": "bash scripts/test-local.sh",
+    "deploy": "npm run check && wrangler d1 migrations apply kmop-hq --remote && wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.40.0"
+  }
+}

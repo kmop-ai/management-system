@@ -1,0 +1,52 @@
+# KMOP HQ — one Worker serves the API (/api/*) and the static SPA (public/).
+name = "kmop-hq"
+main = "worker.js"
+compatibility_date = "2025-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Static front end: no build step, ES modules served straight from public/.
+# /api/* always hits the Worker first; everything else falls back to index.html.
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+
+# D1 is the system of record. Replace database_id after `wrangler d1 create kmop-hq`.
+[[d1_databases]]
+binding = "DB"
+database_name = "kmop-hq"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+migrations_table = "schema_migrations"
+
+# KV holds sessions and short-lived caches; nothing in KV is the only copy of anything.
+[[kv_namespaces]]
+binding = "KV"
+id = "00000000000000000000000000000000"
+
+# R2 holds documents and attachments; D1 holds their metadata.
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "kmop-hq-files"
+
+# Hourly: due-date notices, recurring tasks, outbox, digests (sent at each
+# user's local digest hour), and the nightly retention purge.
+[triggers]
+crons = ["5 * * * *"]
+
+[vars]
+APP_NAME = "KMOP HQ"
+# Comma-separated. Unknown addresses from these domains may sign in only if
+# AUTO_PROVISION = "1"; anyone else must be invited by an admin first.
+ALLOWED_EMAIL_DOMAINS = "kmop.org,kmop.eu,kmop.gr"
+AUTO_PROVISION = "0"
+# "1" only for local development: magic links are returned in the API
+# response and emails stay in the outbox instead of being sent.
+DEV_MODE = "0"
+MAIL_FROM = "KMOP HQ <hq@kmop.org>"
+# Public URL, used in links inside emails sent by the cron (no request to read it from).
+APP_URL = "https://kmop-hq.workers.dev"
+
+[env.dev.vars]
+DEV_MODE = "1"
