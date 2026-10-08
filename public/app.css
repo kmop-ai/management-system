@@ -486,13 +486,13 @@ mark { background: #fde68a; color: inherit; border-radius: 2px; padding: 0 1px; 
 .adm-explain p:last-child { margin-bottom: 0; }
 .adm-matrix-wrap { max-height: calc(100vh - 260px); overflow: auto; }
 .adm-matrix th, .adm-matrix td { padding: 6px 6px; }
-.adm-matrix thead th { white-space: normal; vertical-align: bottom; min-width: 92px; text-transform: none; letter-spacing: 0; font-size: 11.5px; line-height: 1.25; }
+.adm-matrix thead th { white-space: normal; vertical-align: bottom; min-width: 100px; text-transform: none; letter-spacing: 0; font-size: 11.5px; line-height: 1.25; }
 .adm-matrix .adm-modhead { display: inline-flex; gap: 3px; align-items: flex-start; }
 .adm-matrix .adm-rolecell { position: sticky; left: 0; z-index: 2; background: var(--surface); min-width: 200px; max-width: 240px; text-align: left; font-weight: 400; color: var(--text); text-transform: none; letter-spacing: 0; font-size: var(--fs-sm); border-right: 1px solid var(--border); }
 .adm-matrix thead .adm-rolecell { background: var(--surface-2); z-index: 3; color: var(--text-3); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .4px; font-weight: 600; }
 .adm-matrix tbody tr:hover .adm-rolecell { background: var(--row-hover); }
 .adm-roledesc { white-space: normal; line-height: 1.35; }
-.adm-lvl { width: 100%; min-width: 84px; }
+.adm-lvl { width: 100%; min-width: 108px; }
 .adm-lvl.lvl-0, .adm-lvl-chip.lvl-0 { color: var(--text-3); background: var(--surface); }
 .adm-lvl.lvl-1, .adm-lvl-chip.lvl-1 { color: var(--accent); background: var(--accent-soft); }
 .adm-lvl.lvl-2, .adm-lvl-chip.lvl-2 { color: var(--ok); background: var(--ok-soft); }
@@ -613,6 +613,7 @@ button.wl-cell .v { white-space: nowrap; }
 .plain-list { list-style: none; margin: 0; padding: 4px 0; }
 .plain-list li { padding: 6px 14px; border-bottom: 1px solid var(--border); font-size: var(--fs-sm); min-width: 0; }
 .plain-list li:last-child { border-bottom: 0; }
+.plain-list .chip { flex: none; }
 .card.pad .plain-list li { padding-left: 0; padding-right: 0; }
 .plain-fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 .plain-fieldset legend { padding: 0; margin-bottom: 6px; }

@@ -890,6 +890,7 @@ export const STRINGS = {
   'audit.action_login': ['Signed in', 'Σύνδεση'],
   'audit.action_export': ['Exported', 'Εξαγωγή'],
   'audit.action_purge': ['Purged', 'Οριστική διαγραφή'],
+  'audit.action_anonymise': ['Anonymised', 'Ανωνυμοποίηση'],
   'audit.type_task': ['Task', 'Εργασία'],
   'audit.type_project': ['Project', 'Έργο'],
   'audit.type_project_member': ['Project member', 'Μέλος έργου'],

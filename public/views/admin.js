@@ -167,7 +167,8 @@ async function rolesTab(el) {
               write ? h('button', { class: 'btn ghost sm', onclick: () => editRoleDialog(r, async () => render(await api.get('/roles'))) }, t('admin.edit_role'))
                 : null))),
         d.modules.map(m => {
-          const sel = h('select', { class: ['input sm adm-lvl', 'lvl-' + current[m.key]], disabled: !write, 'aria-label': `${labelOf(r)} — ${modLabel(m)}`,
+          if (!write) return h('td', null, h('span', { class: ['chip adm-lvl-chip', 'lvl-' + current[m.key]], title: `${labelOf(r)} — ${modLabel(m)}` }, LV[current[m.key]]));
+          const sel = h('select', { class: ['input sm adm-lvl', 'lvl-' + current[m.key]], 'aria-label': `${labelOf(r)} — ${modLabel(m)}`,
             onchange: (e) => {
               draft[m.key] = Number(e.target.value);
               sel.className = 'input sm adm-lvl lvl-' + draft[m.key] + (draft[m.key] !== current[m.key] ? ' changed' : '');

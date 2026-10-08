@@ -244,7 +244,7 @@ async function metricsCard(el, u, self) {
     const v = m[k];
     if (v == null) return '—';
     if (k === 'on_time_rate') return `${v}%`;
-    if (k === 'avg_days_in_hand' || k === 'open_avg_age_days') return t('metric.n_days', { n: v });
+    if (k === 'avg_days_in_hand' || k === 'open_avg_age_days') return t('metric.n_days', { n: new Intl.NumberFormat(state.locale === 'el' ? 'el-GR' : 'en-GB', { maximumFractionDigits: 1 }).format(v) });
     return String(v);
   };
   const rolesList = (m.visible_to?.roles || []).map(r => (state.locale === 'el' ? r.label_el : r.label_en)).filter(Boolean);
@@ -297,7 +297,7 @@ function accessSection(u, self) {
       h('td', null, h('button', { class: 'btn ghost sm', 'aria-label': t('access.revoke_override_label', { module: moduleLabel(o.module) }), onclick: async () => {
         if (!await confirmDialog(t('access.revoke_override_confirm', { module: moduleLabel(o.module), name: u.name }), { okLabel: t('access.revoke') })) return;
         try { await api.del(`/users/${u.id}/module-access/${o.id}`); toast(t('access.revoked')); location.reload(); } catch (e) { showError(e); }
-      } }, t('access.revoke'))))))) : h('p', { class: 'muted small' }, t('access.no_overrides'));
+      } }, t('access.revoke')))))))) : h('p', { class: 'muted small' }, t('access.no_overrides'));
 
   return h('section', { class: 'card pad', 'aria-labelledby': 'pp-access' },
     h('div', { class: 'row mb-8' }, h('h2', { id: 'pp-access' }, icon('shield', 15), ' ', t('access.title')), h('span', { class: 'muted small' }, t('access.admin_only'))),

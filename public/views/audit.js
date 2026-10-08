@@ -5,15 +5,15 @@
 
 import { h, mount, icon, debounce } from '../lib/dom.js';
 import { api, listAll } from '../lib/api.js';
-import { state, t, can, entityById } from '../lib/state.js';
+import { state, t, can, entityById, projectRole } from '../lib/state.js';
 import { avatar, fmtDateTime, timeAgo, emptyState, spinner, errorText } from '../lib/ui.js';
 
-const ACTIONS = ['create', 'update', 'delete', 'restore', 'grant', 'revoke', 'login', 'export', 'purge'];
+const ACTIONS = ['create', 'update', 'delete', 'restore', 'grant', 'revoke', 'login', 'export', 'purge', 'anonymise'];
 const actionLabel = (a) => ({
   create: t('audit.action_create'), update: t('audit.action_update'), delete: t('audit.action_delete'), restore: t('audit.action_restore'),
-  grant: t('audit.action_grant'), revoke: t('audit.action_revoke'), login: t('audit.action_login'), export: t('audit.action_export'), purge: t('audit.action_purge'),
+  grant: t('audit.action_grant'), revoke: t('audit.action_revoke'), login: t('audit.action_login'), export: t('audit.action_export'), purge: t('audit.action_purge'), anonymise: t('audit.action_anonymise'),
 })[a] || a;
-const ACTION_CLASS = { create: 'ok', restore: 'ok', update: 'accent', delete: 'danger', purge: 'danger', grant: 'warn', revoke: 'warn' };
+const ACTION_CLASS = { create: 'ok', restore: 'ok', update: 'accent', delete: 'danger', purge: 'danger', anonymise: 'danger', grant: 'warn', revoke: 'warn' };
 
 const TYPES = ['task', 'project', 'project_member', 'comment', 'attachment', 'allocation', 'leave', 'section', 'label', 'custom_field', 'checklist_item',
   'dependency', 'project_template', 'task_template', 'user', 'role', 'entity', 'holiday', 'department', 'setting', 'audit_log', 'retention'];
@@ -35,7 +35,9 @@ export default async function auditView(root, params, query = {}) {
   mount(root, page);
   const head = h('div', { class: 'page-head' }, h('h1', null, t('nav.audit')));
 
-  if (!can('audit', 1) && !f.project_id) {
+  // Without the audit module only a project's managers may read its trail
+  // (PMs, or project write access in scope); the server has the last word.
+  if (!can('audit', 1) && (!f.project_id || (projectRole(Number(f.project_id)) !== 'pm' && !can('projects', 2)))) {
     mount(page, head, h('div', { class: 'card pad col gap-8', style: { maxWidth: '640px' } },
       h('div', { class: 'row' }, icon('lock', 18), h('h2', null, t('audit.no_access_title'))),
       h('p', { class: 'muted', style: { margin: 0 } }, t('audit.no_access'))));
@@ -90,7 +92,7 @@ export default async function auditView(root, params, query = {}) {
     sel('action', t('audit.any_action'), ACTIONS.map(a => [a, actionLabel(a)])),
     sel('object_type', t('audit.any_type'), TYPES.map(k => [k, typeLabel(k)]).sort((a, b) => a[1].localeCompare(b[1]))),
     sel('entity_id', t('audit.any_entity'), state.entities.map(e => [e.id, e.code])),
-    dateInput('from', t('common.from')), dateInput('to', t('common.to')),
+    h('span', { class: 'row wrap gap-4' }, dateInput('from', t('common.from')), dateInput('to', t('common.to'))),
     FILTER_KEYS.some(k => f[k]) ? h('button', { class: 'btn ghost sm', onclick: () => { for (const k of FILTER_KEYS) f[k] = ''; sync(); renderBar(); renderPresets(); load(true); } }, icon('x', 12), t('common.clear')) : null);
 
   // project / object presets have no control in the bar: show them as removable chips
