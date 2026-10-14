@@ -213,7 +213,7 @@ const TABS = [
 // ============================================================ state
 const S = {
   db: null, user: null, me: null, myId: null, canWrite: true, isAdmin: false, isOwner: false, noDb: false, ready: {},
-  projects: [], dels: [], mss: [], tasks: [], conflicts: [], handled: [], overrides: [], kpiv: [], members: [], activity: [], drafts: [], sugg: [], meetings: [], risks: [], runs: [],
+  projects: [], dels: [], mss: [], tasks: [], conflicts: [], handled: [], overrides: [], kpiv: [], members: [], activity: [], drafts: [], sugg: [], meetings: [], risks: [], runs: [], statusReports: [], prefs: null,
   names: {}, pins: [], prefsVersion: 0,
   route: parseHash(), railOpen: false,
   ui: { q: '', fProg: '', fEnt: '', fPm: '', fRole: '', work: 'list', wOwner: 'all', wStatus: 'open', wWp: '', wq: '', calMonth: null, baseline: {}, dFilter: '', drawer: null, picks: null, confirm: null, mwFilter: 'mine' },
@@ -222,7 +222,7 @@ function parseHash() {
   const h = (location.hash || '').slice(1);
   const m = h.match(/^p\.([a-z0-9-]+)(?:\.([a-z]+))?$/);
   if (m) return { view: 'project', id: m[1], tab: m[2] || 'overview' };
-  if (['mywork','portfolio','procedures','reports','team'].includes(h)) return { view: h };
+  if (['mywork','portfolio','teamportfolio','notifications','procedures','reports','team'].includes(h)) return { view: h };
   return { view: 'home' };
 }
 function go(route) {
@@ -330,6 +330,8 @@ function urgentItems(p) {
     else if (taskOverdue(t)) add({ key: `task:${t.id}:overdue:${t.due}`, sev: 'red', t: t.title, s: `Overdue since ${fmtDay(t.due)} · ${t.owner_kind === 'partner' ? (t.owner_partner || 'partner') : (nameOf(t.owner_user) || 'KMOP, unassigned')}`, task: t.id });
     else if (t.due && daysBetween(today(), parseDay(t.due)) <= 14) add({ key: `task:${t.id}:soon:${t.due}`, sev: 'amber', t: t.title, s: `Due ${fmtDay(t.due)}`, task: t.id });
   }
+  for (const a of meetingAlerts(p)) add(a);
+  for (const c of computedConflicts(p)) add({ key: c.key, sev: 'blue', t: `Sources disagree: ${c.object} · ${c.field}`, s: c.reason, ...(c.task ? { task: c.task } : {}) });
   for (const c of pConf(p.id)) add({ key: `conf:${c.id}`, sev: 'blue', t: `Sources disagree: ${c.object} · ${c.field}`, s: c.reason, conf: c.id });
   const rank = { red: 0, amber: 1, blue: 2 };
   return out.sort((a, b) => rank[a.sev] - rank[b.sev]);
@@ -406,7 +408,8 @@ function roleBadge(p) {
 }
 function renderRail() {
   const r = S.route;
-  const nav = [['mywork', 'My work'], ['portfolio', 'Portfolio', 3], ['procedures', 'Procedures Assistant', 5], ['reports', 'Reports', 6], ['team', 'Team & access']];
+  const role = myRole(), un = S.ready.projects ? unreadCount() : 0;
+  const nav = [['mywork', 'My work'], ...(['hou', 'admin'].includes(role) ? [['teamportfolio', 'Team portfolio']] : []), ...(['smt', 'admin', 'hou'].includes(role) ? [['portfolio', 'Portfolio']] : []), ['notifications', `Notifications${un ? ` <span class="count">${un}</span>` : ''}`], ['procedures', 'Procedures Assistant', 5], ['reports', 'Reports', 6], ['team', 'Team & access']];
   const list = railFiltered();
   const pinned = list.filter(p => S.pins.includes(p.id));
   const item = (p) => {
@@ -437,10 +440,16 @@ function renderView() {
   if (r.view === 'project') { const p = proj(r.id); if (!p) return S.ready.projects ? `<div class="empty">This project was not found.</div>` : '<div class="empty">Loading…</div>'; return renderProject(p, r.tab); }
   if (r.view === 'mywork') return renderMyWork();
   if (r.view === 'team') return renderTeam();
-  if (r.view === 'portfolio') return later('Portfolio', 3, 'All projects with RAG, KMOP role, % of time elapsed vs % of deliverables done, EC deadlines in the next 90 days, top risks, and projects without updates for more than 14 days. Heads of unit get the same view for their team.');
+  if (r.view === 'portfolio') return renderPortfolio('all');
+  if (r.view === 'teamportfolio') return renderPortfolio('team');
+  if (r.view === 'notifications') return renderNotifications();
   if (r.view === 'procedures') return later('Procedures Assistant', 5, 'Ask how things are done at KMOP and get an answer with a citation to the internal procedure (Filing Procedure, Events Manual, Brussels Office Procedures Manual, Amendments guidelines, PM handover checklist), plus a browsable FAQ.');
   if (r.view === 'reports') return later('Reports', 6, 'Management report (one page per project), SC meeting agenda drafts and EC progress report narrative drafts, exported to Google Docs or PDF after your approval.');
-  return renderHome();
+  if (!S.ready.projects) return '<div class="empty">Loading projects…</div>';
+  const role = myRole();
+  if (role === 'admin' || role === 'smt') return renderPortfolio('all');
+  if (role === 'hou') return renderPortfolio('team');
+  return renderMyWork();
 }
 function later(title, phase, text) { return `<div class="later-card"><span class="badge">Phase ${phase}</span><h2 style="margin-top:10px">${esc(title)}</h2><p class="muted">${esc(text)}</p></div>`; }
 
@@ -505,16 +514,18 @@ function renderOverview(p, rg) {
     <div class="stack">
       ${draftsFor(p.id).filter(d => d.status === 'draft').map(d => `<div class="notice"><b>A draft baseline is waiting for review</b> (${esc(d.baseline_label || 'from onboarding')}). <button class="btn small primary" data-act="review" data-id="${esc(d.id)}">Review</button></div>`).join('')}
       <div class="panel"><h3>Needs attention <span class="small" style="text-transform:none;letter-spacing:0">${u.length} items</span></h3>${renderUrgentList(p, u)}</div>
+      ${renderConflicts(p)}
       ${openSugg(p.id).length ? `<div class="panel"><h3>Agent suggestions to review · ${openSugg(p.id).length} <button class="btn small" data-act="tab" data-tab="meetings">Review all</button></h3><div class="urgent">${openSugg(p.id).slice(0, 4).map(renderSuggestion).join('')}</div></div>` : ''}
       <div class="panel"><h3>Plan vs actual <button class="btn small" data-act="tab" data-tab="plan">Open plan</button></h3>${gantt(p, { compact: true })}</div>
     </div>
     <div class="stack">
-      <div class="panel"><h3>Status</h3>
+      ${renderStatusCard(p)}
+      <div class="panel"><h3>RAG</h3>
         <div class="row" style="margin-bottom:8px"><span class="ragpill ${rg.rag}"><span class="dot ${rg.rag}"></span>${rg.rag.toUpperCase()}</span>
         ${rg.override ? `<span class="small muted">Override by ${esc(nameOf(rg.override.by) || 'PM')}: “${esc(rg.override.reason)}” (rules say ${rg.computed})</span>` : `<span class="small muted">From the RAG rules</span>`}</div>
         ${rg.reasons.length ? `<ul class="list small">${rg.reasons.slice(0, 6).map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
         <div class="row" style="margin-top:10px">${renderOverride(p, rg)}</div>
-        <p class="small muted" style="margin:14px 0 6px"><b>Latest known status</b> (from the seed: minutes, handover, trackers). The weekly AI status summary arrives in Phase 3.</p>
+        <p class="small muted" style="margin:14px 0 6px"><b>Notes from the seed</b> (minutes, handover, trackers)</p>
         <ul class="list small">${(p.status_notes || []).map(x => `<li>${esc(x)}</li>`).join('')}</ul>
       </div>
       <div class="panel"><h3>Next 30 days</h3>${next.length ? next.map(n => `<div class="kpi"><div><div>${esc(n.what)}</div><div class="small muted">${n.kind} · ${esc(n.sub)}</div></div><div class="mono small">${fmtDay(n.when)}</div></div>`).join('') : '<div class="empty small">Nothing due in the next 30 days.</div>'}</div>
@@ -707,9 +718,9 @@ function renderTeam() {
   const admin = S.isAdmin || S.isOwner;
   const rows = S.members.slice().sort((a, b) => nameOf(a.id).localeCompare(nameOf(b.id)));
   return `<div class="phead"><h1>Team & access</h1><div class="muted">Your role: <b>${esc(APP_ROLES[myRole()])}</b>${S.isOwner ? ' (owner of KMOP Co-Work)' : ''}</div></div>
-  <div class="notice small" style="margin-bottom:16px"><b>How access works.</b> People open KMOP Co-Work with their own KMOP Claude account; there is no separate password. Who can open it and who can change data is set with <b>Share</b> at the top of this page: <b>Viewer</b> = read only, <b>Contributor</b> = can update tasks, deliverables and KPIs, <b>Editor</b> = can also assign roles below. The role below decides each person's home screen (from Phase 3) and which actions they see. People without a role here count as PM / Researcher.</div>
+  <div class="notice small" style="margin-bottom:16px"><b>How access works.</b> People open KMOP Co-Work with their own KMOP Claude account; there is no separate password. Who can open it and who can change data is set with <b>Share</b> at the top of this page: <b>Viewer</b> = read only, <b>Contributor</b> = can update tasks, deliverables and KPIs, <b>Editor</b> = can also assign roles below. The role decides each person's home screen (Senior management: Portfolio; Head of unit: Team portfolio; others: My work); linking people to projects decides whose notifications they get. People without a role here count as PM / Researcher.</div>
   ${admin ? `<div class="panel" style="margin-bottom:16px"><h3>Add a person</h3><div class="row"><div class="picker" style="flex:1;min-width:220px"><input type="text" id="team-q" placeholder="Search KMOP colleagues by name" autocomplete="off" style="width:100%" aria-label="Search colleagues">${S.ui.picks?.for === 'team' ? renderPicks('team') : ''}</div><select id="team-role" aria-label="Role">${Object.entries(APP_ROLES).map(([k, v]) => `<option value="${k}" ${k === 'pm' ? 'selected' : ''}>${v}</option>`).join('')}</select><input type="text" id="team-unit" placeholder="Unit (optional)"></div><p class="small muted">Pick a person from the list to add them with the selected role.</p></div>` : ''}
-  <div class="panel" style="padding:0"><div class="tablewrap"><table><thead><tr><th style="padding-left:16px">Person</th><th>Role</th><th>Unit</th><th>Added</th>${admin ? '<th></th>' : ''}</tr></thead><tbody>${rows.length ? rows.map(m => `<tr><td style="padding-left:16px">${esc(nameOf(m.id))}${m.id === S.myId ? ' <span class="small muted">(you)</span>' : ''}</td><td>${admin ? `<select data-mrole="${esc(m.id)}" aria-label="Role">${Object.entries(APP_ROLES).map(([k, v]) => `<option value="${k}" ${m.role === k ? 'selected' : ''}>${v}</option>`).join('')}</select>` : esc(APP_ROLES[m.role] || m.role)}</td><td>${admin ? `<input type="text" value="${esc(m.unit || '')}" data-munit="${esc(m.id)}" aria-label="Unit">` : esc(m.unit || '')}</td><td class="small muted">${m.at ? fmtDay(m.at.slice(0, 10)) : ''}</td>${admin ? `<td><button class="btn small danger" data-act="mdel" data-id="${esc(m.id)}">Remove</button></td>` : ''}</tr>`).join('') : `<tr><td colspan="5" class="empty">No roles assigned yet.${admin ? ' Add your colleagues above.' : ''}</td></tr>`}</tbody></table></div></div>`;
+  <div class="panel" style="padding:0"><div class="tablewrap"><table><thead><tr><th style="padding-left:16px">Person</th><th>Role</th><th>Unit</th><th>Projects</th><th>Added</th>${admin ? '<th></th>' : ''}</tr></thead><tbody>${rows.length ? rows.map(m => `<tr><td style="padding-left:16px">${esc(nameOf(m.id))}${m.id === S.myId ? ' <span class="small muted">(you)</span>' : ''}</td><td>${admin ? `<select data-mrole="${esc(m.id)}" aria-label="Role">${Object.entries(APP_ROLES).map(([k, v]) => `<option value="${k}" ${m.role === k ? 'selected' : ''}>${v}</option>`).join('')}</select>` : esc(APP_ROLES[m.role] || m.role)}</td><td>${admin ? `<input type="text" value="${esc(m.unit || '')}" data-munit="${esc(m.id)}" aria-label="Unit">` : esc(m.unit || '')}</td><td class="small">${admin ? S.projects.map(p => `<label class="row" style="gap:4px"><input type="checkbox" data-mproj="${esc(m.id)}|${esc(p.id)}" ${(m.projects || []).includes(p.id) ? 'checked' : ''}> ${esc(p.acronym)}</label>`).join('') : esc((m.projects || []).map(id => proj(id)?.acronym).filter(Boolean).join(', '))}</td><td class="small muted">${m.at ? fmtDay(m.at.slice(0, 10)) : ''}</td>${admin ? `<td><button class="btn small danger" data-act="mdel" data-id="${esc(m.id)}">Remove</button></td>` : ''}</tr>`).join('') : `<tr><td colspan="5" class="empty">No roles assigned yet.${admin ? ' Add your colleagues above.' : ''}</td></tr>`}</tbody></table></div></div>`;
 }
 function renderPicks(forWhat) {
   const pk = S.ui.picks; if (!pk || pk.for !== forWhat) return '';
@@ -728,6 +739,7 @@ function openTask(id) {
 }
 function closeTask() { S.ui.drawer = null; if (commentsUnsub) commentsUnsub(); commentsUnsub = null; commentsFor = null; render(); }
 function renderDrawer() {
+  if (S3.reminder) return renderReminder();
   if (S2.review) return renderReview();
   if (S2.editSugg) return renderSuggEdit();
   const id = S.ui.drawer; if (!id) return '';
@@ -773,7 +785,8 @@ function taskPatch(data, text) { const t = curTask(); if (!t) return; return pat
 
 // ============================================================ events
 document.addEventListener('click', async (e) => {
-  const el = e.target.closest('[data-act]'); if (!el) { if (S.ui.picks && !e.target.closest('.picker')) { S.ui.picks = null; render(); } return; }
+  const el = e.target.closest('[data-act]');
+  if (el && e.target !== el && e.target.closest('select, input, textarea, label') && el.contains(e.target.closest('select, input, textarea, label'))) return; if (!el) { if (S.ui.picks && !e.target.closest('.picker')) { S.ui.picks = null; render(); } return; }
   const a = el.dataset.act;
   if (el.tagName === 'A') e.preventDefault();
   if (a === 'pin') { e.stopPropagation(); return togglePin(el.dataset.id); }
@@ -822,6 +835,21 @@ document.addEventListener('click', async (e) => {
     case 'sg-accept': { const sg = S.sugg.find(x => x.id === el.dataset.id); el.disabled = true; await acceptSuggestion(sg); break; }
     case 'sg-reject': { const id = el.dataset.id, sg = S.sugg.find(x => x.id === id); const ok = await write(() => S.db.collection('suggestions').doc(id).update({ status: 'rejected', decided_by: S.myId, decided_at: nowIso() }), 'Rejected'); if (ok) log(sg.project, `Rejected suggestion: ${sg.title}`); break; }
     case 'sg-edit': S2.editSugg = el.dataset.id; render(); break;
+    case 'status-run': runStatus(proj(el.dataset.pid)); break;
+    case 'status-edit': S3.editStatus = el.dataset.id; render(); break;
+    case 'status-cancel': S3.editStatus = null; render(); break;
+    case 'status-publish': { const id = el.dataset.id, r = S.statusReports.find(x => x.id === id), ta = document.getElementById('st-edit'); const edited = ta && S3.editStatus === id ? ta.value.trim() : null; const ok = await write(() => S.db.collection('status_reports').doc(id).update({ status: 'published', published_by: S.myId, published_at: nowIso(), ...(edited && edited !== r.summary ? { edited_summary: edited } : {}) }), 'Status published'); if (ok) { S3.editStatus = null; log(r.project, 'Published the status summary'); render(); } break; }
+    case 'status-discard': { const id = el.dataset.id, r = S.statusReports.find(x => x.id === id); await write(() => S.db.collection('status_reports').doc(id).update({ status: 'discarded', discarded_by: S.myId, discarded_at: nowIso() }), 'Draft discarded'); log(r.project, 'Discarded a status summary draft'); break; }
+    case 'status-rag': { const r = S.statusReports.find(x => x.id === el.dataset.id); const reason = `Status writer proposal: ${(r.rag_reasons || []).join('; ') || 'see status summary'}`; const ok = await write(() => S.db.collection('overrides').doc(r.project).set({ rag: r.rag_proposal, reason, by: S.myId, at: nowIso() }), 'RAG updated'); if (ok) log(r.project, `RAG set to ${r.rag_proposal.toUpperCase()} from the Status writer proposal`); break; }
+    case 'cres': S3.resolving = el.dataset.id; render(); break;
+    case 'cres-cancel': S3.resolving = null; render(); break;
+    case 'cres-save': { const id = el.dataset.id, c = S.conflicts.find(x => x.id === id), win = document.querySelector('input[name="cwin"]:checked')?.value, note = document.getElementById('cres-note')?.value.trim() || null; if (!win) { toast('Choose which value to keep.'); return; } const ok = await write(() => S.db.collection('conflicts').doc(id).update({ status: 'resolved', kept: win, note, resolved_by: S.myId, resolved_at: nowIso() }), 'Conflict resolved'); if (ok) { S3.resolving = null; log(c.project, `Resolved “${c.object} · ${c.field}”: kept ${win}${note ? ' (' + note + ')' : ''}`); render(); } break; }
+    case 'n-open': openNotification(el.dataset.key); break;
+    case 'n-readall': { const seen = { ...(prefs().seen || {}) }, ss = { ...(prefs().suggSeen || {}) }; for (const n of notifications()) { seen[n.key] = nowIso(); if (n.key.startsWith('n:sugg:')) ss[n.project] = nowIso(); } savePrefs({ seen, suggSeen: ss }); render(); break; }
+    case 'remind': S3.reminder = el.dataset.id; render(); break;
+    case 'remind-close': S3.reminder = null; render(); break;
+    case 'remind-copy': { const ta = document.getElementById('remind-text'); try { await navigator.clipboard.writeText(ta.value); toast('Copied'); } catch { ta.select(); toast('Press Ctrl/⌘ + C to copy'); } break; }
+    case 'mt-minutes': S3.minutesFor = el.dataset.id; render(); break;
     case 'sg-dismiss': { const mid = el.dataset.mid, list = S.sugg.filter(x => x.status === 'open' && x.meeting_id === mid); el.disabled = true; const ok = await write(async () => { for (const x of list) await S.db.collection('suggestions').doc(x.id).update({ status: 'dismissed', decided_by: S.myId, decided_at: nowIso() }); }, `Dismissed ${list.length} suggestions`); if (ok && list.length) log(list[0].project, `Dismissed ${list.length} suggestions from ${S.meetings.find(m => m.id === mid)?.title || 'a meeting'}`); break; }
     case 'sg-close': S2.editSugg = null; render(); break;
     case 'mdel': { const id = el.dataset.id; await write(() => S.db.collection('members').doc(id).delete(), 'Role removed'); break; }
@@ -848,6 +876,8 @@ document.addEventListener('submit', async (e) => {
   else if (f.id === 'comment-add') { const ta = document.getElementById('c-text'); const text = ta.value.trim(); if (!text) return; ta.value = ''; ta.blur(); const t = curTask(); const ok = await write(() => S.db.collection(`tasks/${t.id}/comments`).add({ text, by: S.myId, at: nowIso() })); if (ok) log(t.project, `Comment on “${t.title}”`); }
   else if (f.id === 'link-folder') { const url = document.getElementById('folder-url').value.trim(), m = url.match(/folders\/([\w-]+)/); if (!m) { toast('Paste a Google Drive folder link.'); return; } const pid = f.dataset.pid; document.activeElement?.blur(); const ok = await write(() => S.db.collection('projects').doc(pid).update({ drive_url: url, drive_folder_id: m[1] }), 'Folder linked'); if (ok) { delete S2.drive[pid]; log(pid, 'Linked the Drive folder'); } }
   else if (f.id === 'sg-form') { const s = S.sugg.find(x => x.id === f.dataset.id), v = (id) => document.getElementById(id).value.trim(); const sel = v('sg-del'); const edits = { title: v('sg-title') || s.title, kind: v('sg-kind'), owner: v('sg-owner') || null, owner_kind: v('sg-okind'), due: v('sg-due') || null, description: v('sg-desc') || null, new_status: v('sg-status') || null, deliverable: sel && !sel.startsWith('MS') ? sel : null, target: sel || s.target || null }; document.activeElement?.blur(); await acceptSuggestion(s, edits); S2.editSugg = null; render(); }
+  else if (f.id === 'meet-add') { const pid = f.dataset.pid, v = (i) => document.getElementById(i).value.trim(); const title = v('mt-title'), date = v('mt-date'); if (!title || !date) { toast('Give the meeting a title and a date.'); return; } document.activeElement?.blur(); const ok = await write(() => S.db.collection('meetings').add({ project: pid, title, date, type: v('mt-type'), format: v('mt-format'), planned: true, minutes_url: null, url: null, created_by: S.myId, created_at: nowIso(), suggestion_count: 0 }), 'Meeting added'); if (ok) log(pid, `Added meeting ${title} (${fmtDay(date)})`); }
+  else if (f.id === 'mt-min-form') { const id = f.dataset.id, url = document.getElementById('mt-min-url').value.trim(), m = S.meetings.find(x => x.id === id); if (!/^https:\/\//.test(url)) { toast('Paste a Drive link that starts with https://'); return; } document.activeElement?.blur(); const ok = await write(() => S.db.collection('meetings').doc(id).update({ minutes_url: url, url, minutes_added_at: nowIso(), minutes_added_by: S.myId }), 'Minutes link saved'); if (ok) { S3.minutesFor = null; log(m.project, `Minutes added for ${m.title}`); const fid = (url.match(/\/d\/([\w-]+)/) || [])[1]; if (fid && S2.mcp && S2.sample) runMinutes(proj(m.project), { id: fid, title: m.title + ' minutes', url }); render(); } }
   else if (f.id === 'vf-form') { const id = f.dataset.id, url = document.getElementById('vf-url').value.trim(); if (url && !/^https:\/\//.test(url)) { toast('Paste a link that starts with https://'); return; } S.ui.vfFor = null; document.activeElement?.blur(); const d = S.dels.find(x => x.id === id); await patch('deliverables', id, { vf_url: url || null }, `${d.code}: final file link ${url ? 'set' : 'removed'}`, d.project); render(); }
 });
 let searchT = null;
@@ -890,6 +920,9 @@ document.addEventListener('change', async (e) => {
   if (el.dataset.rmode) { S2.review.mode = el.dataset.rmode; render(); return; }
   if (id === 'r-label') { S2.review.label = el.value; return; }
   if (id === 'r-date') { S2.review.date = el.value; return; }
+  if (id === 'digest-freq') { savePrefs({ digest: el.value }); render(); return; }
+  if (el.dataset.punit != null && el.dataset.punit !== '') { const pid = el.dataset.punit; await write(() => S.db.collection('projects').doc(pid).update({ unit: el.value || null }), 'Unit saved'); return; }
+  if (el.dataset.mproj) { const [mid, pid] = el.dataset.mproj.split('|'), m = S.members.find(x => x.id === mid), set = new Set(m.projects || []); el.checked ? set.add(pid) : set.delete(pid); await write(() => S.db.collection('members').doc(mid).update({ projects: [...set] })); return; }
   if (el.dataset.mrole) { await write(() => S.db.collection('members').doc(el.dataset.mrole).update({ role: el.value }), 'Role updated'); return; }
   if (el.dataset.munit) { await write(() => S.db.collection('members').doc(el.dataset.munit).update({ unit: el.value.trim() || null })); return; }
   if (el.dataset.sub != null) { const t = curTask(); const s = (t.subtasks || []).map((x, i) => i === +el.dataset.sub ? { ...x, done: el.checked } : x); taskPatch({ subtasks: s }, el.checked ? `subtask done: ${s[+el.dataset.sub].t}` : null); return; }
@@ -1261,7 +1294,7 @@ function renderMeetings(p) {
   const tracked = pTasks(p.id).filter(t => String(t.source || '').startsWith('Minutes') || t.cite).sort(sortTasks);
   return `<div class="grid2"><div class="stack"><div class="panel"><h3>Suggestions to review · ${sg.length}</h3>${sg.length ? `<div class="urgent">${sg.map(renderSuggestion).join('')}</div>` : '<div class="empty small">No open suggestions. Run the Minutes agent from Documents (Extract actions next to a minutes file).</div>'}</div>
     <div class="panel"><h3>Action tracker · ${tracked.length}</h3>${tracked.length ? tracked.map(t => `<div class="kpi" data-act="task" data-id="${esc(t.id)}" style="cursor:pointer"><div>${esc(t.title)}<div class="small muted">${esc(ownerLabel(t))} · ${TSTATUS[t.status]}</div></div><div class="mono small">${t.due ? fmtDay(t.due) : ''}</div></div>`).join('') : '<div class="empty small">Actions accepted from minutes appear here. They are also tasks in Work.</div>'}</div></div>
-  <div class="stack"><div class="panel"><h3>Meetings · ${ms.length}</h3>${ms.length ? ms.map(m => { const op = sg.filter(x => x.meeting_id === m.id).length; return `<div class="kpi"><div><b>${esc(m.title)}</b><div class="small muted">${esc(m.type || '')}${m.date ? ' · ' + fmtDay(m.date) : ''} · ${m.suggestion_count ?? 0} suggestions, ${op} open</div></div><div class="row">${m.url ? `<a class="small" href="${esc(m.url)}" target="_blank" rel="noopener">Minutes ↗</a>` : ''}${op && canEdit() ? `<button class="btn small" data-act="sg-dismiss" data-mid="${esc(m.id)}">Dismiss ${op} open</button>` : ''}</div></div>`; }).join('') : '<div class="empty small">No meetings yet. A meeting is added when the Minutes agent reads its minutes.</div>'}</div>
+  <div class="stack">${renderMeetingForm(p)}<div class="panel"><h3>Meetings · ${ms.length}</h3>${ms.length ? ms.map(m => { const op = sg.filter(x => x.meeting_id === m.id).length; return `<div class="kpi"><div><b>${esc(m.title)}</b><div class="small muted">${esc(m.type || '')}${m.date ? ' · ' + fmtDay(m.date) : ''} · ${m.suggestion_count ?? 0} suggestions, ${op} open</div></div><div class="row">${m.url ? `<a class="small" href="${esc(m.url)}" target="_blank" rel="noopener">Minutes ↗</a>` : ''}${op && canEdit() ? `<button class="btn small" data-act="sg-dismiss" data-mid="${esc(m.id)}">Dismiss ${op} open</button>` : ''}${m.planned && !m.minutes_url && canEdit() ? `<button class="btn small" data-act="mt-minutes" data-id="${esc(m.id)}">Add minutes link</button>` : ''}</div></div>${S3.minutesFor === m.id ? `<form id="mt-min-form" data-id="${esc(m.id)}" class="row" style="margin:6px 0 10px"><input type="url" id="mt-min-url" placeholder="Drive link to the minutes" style="flex:1"><button class="btn small primary" type="submit">Save</button></form>` : ''}`; }).join('') : '<div class="empty small">No meetings yet. A meeting is added when the Minutes agent reads its minutes.</div>'}</div>
     ${decided.length ? `<div class="panel"><h3>Decided · ${decided.length}</h3>${decided.slice(0, 30).map(s => `<div class="kpi"><div class="small">${esc(s.title)}</div><div class="small muted">${esc(s.status)} · ${esc(nameOf(s.decided_by))}</div></div>`).join('')}</div>` : ''}</div></div>`;
 }
 function renderRisks(p) {
@@ -1274,11 +1307,255 @@ function renderRuns(p) {
   return `<div class="panel" style="margin-top:18px"><h3>Agent runs · ${rs.length}</h3>${rs.map(r => `<div class="kpi"><div>${esc(r.agent === 'onboarding' ? 'Onboarding agent' : 'Minutes agent')} · <span class="status ${r.status === 'done' ? 'done' : r.status === 'failed' ? 'late' : 'doing'}">${esc(r.status)}</span><div class="small muted">${esc((r.files || []).map(f => f.title).join(', '))}${r.counts ? ' · ' + esc(Object.entries(r.counts).map(([k, v]) => `${v} ${k}`).join(', ')) : ''}${r.error ? ' · ' + esc(r.error) : ''}</div></div><div class="small muted">${esc(r.by === 'session' ? 'Claude (setup run)' : nameOf(r.by))} · ${esc((r.at || '').slice(0, 16).replace('T', ' '))}</div></div>`).join('')}</div>`;
 }
 
+// ============================================================ Phase 3: status writer, watcher, conflicts, notifications, portfolio
+const S3 = { statusRun: {}, editStatus: null, resolving: null, reminder: null };
+const prefs = () => S.prefs || {};
+function savePrefs(patch) {
+  S.prefs = { ...prefs(), ...patch };
+  if (patch.pins) S.pins = patch.pins;
+  try { localStorage.setItem('cowork-pins', JSON.stringify(S.pins)); } catch {}
+  if (S.db && S.myId) queued('prefs', () => S.db.doc(`data/users/${S.myId}/prefs`).set(S.prefs)).catch(() => {});
+}
+const myMember = () => S.members.find(m => m.id === S.myId) || null;
+function myProjectIds() {
+  const ids = new Set(myMember()?.projects || []);
+  const nm = norm(S.me?.name);
+  if (nm) for (const p of S.projects) if ([p.pm, p.pm_support, p.fm].some(x => norm(x) === nm)) ids.add(p.id);
+  return ids;
+}
+function teamProjects() {
+  const unit = myMember()?.unit;
+  if (!unit) return [];
+  const mates = S.members.filter(m => norm(m.unit) === norm(unit));
+  const ids = new Set(mates.flatMap(m => m.projects || []));
+  return S.projects.filter(p => norm(p.unit) === norm(unit) || ids.has(p.id));
+}
+const isKmop = (s) => /kmop/i.test(String(s || ''));
+const lastUpdate = (p) => [p.updated_at, ...pTasks(p.id).map(t => t.updated_at), ...pDels(p.id).map(d => d.updated_at), ...S.activity.filter(a => a.project === p.id).map(a => a.at)].filter(Boolean).sort().pop() || null;
+const latestStatus = (pid, st) => S.statusReports.filter(r => r.project === pid && (!st || r.status === st)).sort((a, b) => (b.generated_at || '').localeCompare(a.generated_at || ''))[0] || null;
+
+// ---------------- watcher additions: planned meetings without minutes
+function meetingAlerts(p) {
+  const out = [], limit = p.minutes_due_days || 7;
+  for (const m of S.meetings.filter(m => m.project === p.id && m.planned && !m.minutes_url && m.date)) {
+    const days = daysBetween(parseDay(m.date), today());
+    if (days >= 8) out.push({ key: `meet:${m.id}:esc`, sev: 'red', t: `Minutes missing: ${m.title}`, s: `${days} days since ${fmtDay(m.date)}. Upload the minutes (the project commits to ${limit} days).`, meeting: m.id });
+    else if (days >= 5) out.push({ key: `meet:${m.id}:rem`, sev: 'amber', t: `Upload the minutes of ${m.title}`, s: `${days} days since ${fmtDay(m.date)}; due within ${limit} days.`, meeting: m.id });
+  }
+  return out;
+}
+
+// ---------------- data-conflict detector (computed on every sync, never resolved silently)
+function computedConflicts(p) {
+  const out = [];
+  for (const s of openSugg(p.id).filter(s => s.kind === 'status_change')) {
+    const code = norm(s.target || s.deliverable), d = pDels(p.id).find(y => norm(y.code) === code), m = pMss(p.id).find(y => norm(y.code) === code);
+    const x = d || m; if (!x) continue;
+    const curSt = d ? (DSTATUS[d.status] || 'Not recorded') : (MSTATUS[m.status] || 'Not recorded');
+    const newSt = DSTATUS[s.new_status] || TSTATUS[s.new_status] || MSTATUS[s.new_status] || s.new_status;
+    if (norm(curSt) === norm(newSt) || (d && d.status === s.new_status)) continue;
+    out.push({ key: `cc:sugg:${s.id}`, object: x.code, field: 'Status', reason: `The minutes say ${x.code} is “${newSt}”; Co-Work says “${curSt}”.`, entries: [{ source: `Minutes (${s.cite?.file_title || 'meeting'})`, rank: 3, value: newSt, url: s.cite?.url || null }, { source: 'Co-Work record', rank: 5, value: curSt }], sugg: s.id });
+  }
+  for (const d of draftsFor(p.id).filter(d => d.status === 'draft')) {
+    const n = diffDraft(p, d).filter(r => r.state === 'changed').length;
+    if (n) out.push({ key: `cc:draft:${d.id}`, object: 'Baseline', field: `${n} values`, reason: `${d.baseline_label || 'The grant documents'} differ from Co-Work in ${n} places. The GA prevails once you confirm.`, entries: [{ source: d.baseline_label || 'Grant documents', rank: 1, value: `${n} differences` }, { source: 'Co-Work record', rank: 5, value: 'current baseline' }], draft: d.id });
+  }
+  for (const d of pDels(p.id).filter(d => DDONE.has(d.status))) {
+    const open = pTasks(p.id).filter(t => t.deliverable === d.code && t.status !== 'done');
+    if (open.length) out.push({ key: `cc:open:${d.code}`, object: d.code, field: 'Open tasks', reason: `${d.code} is “${DSTATUS[d.status]}” but ${open.length} task${open.length > 1 ? 's' : ''} for it ${open.length > 1 ? 'are' : 'is'} still open.`, entries: [{ source: 'Deliverable status', rank: 5, value: DSTATUS[d.status] }, { source: 'Tasks', rank: 5, value: `${open.length} open` }], task: open[0].id });
+  }
+  return out;
+}
+const RANK = { 1: 'Grant Agreement / Annex 1', 2: 'Project Work Plan', 3: 'Minutes', 4: 'Group emails', 5: 'Manual input' };
+function renderConflicts(p) {
+  const stored = pConf(p.id), computed = computedConflicts(p);
+  if (!stored.length && !computed.length) return '';
+  const row = (c, isStored) => `<div class="uitem"><span class="stripe amber"></span><div style="min-width:0"><div class="t">${esc(c.object)} · ${esc(c.field)}</div><div class="s">${esc(c.reason || '')}</div>
+    <div class="small" style="margin-top:4px">${(c.entries || []).slice().sort((a, b) => (a.rank || 9) - (b.rank || 9)).map(e => `<div>${S3.resolving === c.id && isStored ? `<label class="row"><input type="radio" name="cwin" value="${esc(e.source)}"> ` : ''}<b>${esc(e.value)}</b> <span class="muted">— ${esc(e.source)}${e.rank ? ` (rank ${e.rank}: ${esc(RANK[e.rank] || '')})` : ''}</span>${e.url ? ` <a href="${esc(e.url)}" target="_blank" rel="noopener">source ↗</a>` : ''}${S3.resolving === c.id && isStored ? '</label>' : ''}</div>`).join('')}</div>
+    ${S3.resolving === c.id ? `<div class="row" style="margin-top:6px"><input type="text" id="cres-note" placeholder="Why (optional)" style="flex:1"><button class="btn small primary" data-act="cres-save" data-id="${esc(c.id)}">Keep the selected value</button><button class="btn small" data-act="cres-cancel">Cancel</button></div>` : ''}</div>
+    <div class="acts">${isStored ? (canEdit() && S3.resolving !== c.id ? `<button class="btn small" data-act="cres" data-id="${esc(c.id)}">Resolve</button>` : '') : c.sugg ? `<button class="btn small" data-act="tab" data-tab="meetings">Review suggestion</button>` : c.draft ? `<button class="btn small" data-act="review" data-id="${esc(c.draft)}">Review</button>` : c.task ? `<button class="btn small" data-act="task" data-id="${esc(c.task)}">Open task</button>` : ''}</div></div>`;
+  return `<div class="panel"><h3>Sources disagree · ${stored.length + computed.length}</h3><div class="urgent">${stored.map(c => row(c, true)).join('')}${computed.map(c => row(c, false)).join('')}</div><p class="small muted">Order of authority: GA / Annex 1 › PWP › minutes (latest) › group emails › manual input. A person always decides.</p></div>`;
+}
+
+// ---------------- status writer
+function statusContext(p) {
+  const v = baselineOf(p), cm = curM(p), rg = ragOf(p), weekAgo = new Date(Date.now() - 7 * 86400000).toISOString();
+  const L = [];
+  L.push(`Project ${p.acronym}: ${p.title}. ${p.programme} ${p.call}. KMOP ${p.entity} is ${p.role}${(p.wp_leads || []).length ? ', leads ' + p.wp_leads.join(', ') : ''}. Lump sum: ${p.funding_model === 'lump_sum' ? 'yes' : 'no'}.`);
+  L.push(`Today ${iso(today())} = M${cm} of ${p.duration} (M1 = ${mLabel(p, 1)}). Baseline ${v}.`);
+  L.push(`RAG by the rules: ${rg.computed.toUpperCase()}. Reasons: ${(rg.reasons || []).join('; ') || 'none'}.${rg.override ? ` PM override: ${rg.override.rag} (${rg.override.reason}).` : ''}`);
+  L.push('Deliverables (code | title | lead | due month | status | forecast):');
+  for (const d of pDels(p.id)) L.push(`- ${d.code} | ${d.title} | ${d.lead || '?'} | M${dueM(p, d)} (${mLabel(p, dueM(p, d))}) | ${DSTATUS[d.status] || 'not recorded'}${d.forecast_month ? ' | forecast M' + d.forecast_month : ''}`);
+  L.push('Milestones:'); for (const m of pMss(p.id)) L.push(`- ${m.code} ${m.title} | due M${dueM(p, m)} | ${MSTATUS[m.status] || 'not recorded'}${m.achieved_month ? ' (M' + m.achieved_month + ')' : ''}`);
+  const open = pTasks(p.id).filter(t => t.status !== 'done');
+  L.push(`Open tasks (${open.length}):`); for (const t of open.slice(0, 40)) L.push(`- ${t.title} | ${ownerLabel(t)} | ${t.due || 'no date'} | ${TSTATUS[t.status]}${t.coordinator_blocker ? ' | COORDINATOR ITEM since ' + (t.since || '?') : ''}${taskOverdue(t) ? ' | OVERDUE' : ''}`);
+  const done = pTasks(p.id).filter(t => t.status === 'done' && (t.updated_at || '') >= weekAgo); if (done.length) { L.push('Tasks completed in the last 7 days:'); for (const t of done) L.push('- ' + t.title); }
+  const act = S.activity.filter(a => a.project === p.id && (a.at || '') >= weekAgo); if (act.length) { L.push('Changes in the last 7 days:'); for (const a of act.slice(0, 40)) L.push(`- ${a.at.slice(0, 10)} ${a.text}`); }
+  const conf = [...pConf(p.id), ...computedConflicts(p)]; if (conf.length) { L.push('Open conflicts between sources:'); for (const c of conf) L.push(`- ${c.object} ${c.field}: ${c.reason}`); }
+  const rs = S.risks.filter(r => r.project === p.id && r.status !== 'closed'); if (rs.length) { L.push('Risks:'); for (const r of rs.slice(0, 12)) L.push('- ' + r.description); }
+  const ms = S.meetings.filter(m => m.project === p.id).sort((a, b) => (b.date || '').localeCompare(a.date || '')).slice(0, 3); if (ms.length) { L.push('Recent meetings:'); for (const m of ms) L.push(`- ${m.date || '?'} ${m.title}`); }
+  const prev = latestStatus(p.id, 'published'); if (prev) L.push(`Last published status (${(prev.published_at || prev.generated_at || '').slice(0, 10)}): ${prev.summary}`);
+  return L.join('\n');
+}
+async function runStatus(p) {
+  const run = S3.statusRun[p.id] = { busy: true, msg: 'The Status writer is reading the project record…' }; render();
+  const runRef = S.db.collection('agent_runs').doc();
+  try {
+    await runRef.set({ agent: 'status', project: p.id, by: S.myId, at: nowIso(), status: 'running' });
+    const prompt = `You are the Status writer of KMOP Co-Work. Write this week's status of the EU project below for KMOP's PM and senior management.
+Rules: use only the record below; do not invent facts or dates; name deliverables by code; plain English, no jargon; say "not recorded" where the record is silent.
+Reply with ONLY one JSON object: {"summary": "5 to 8 sentences: where the project is, what changed since last week, what is at risk", "rag_proposal": "green"|"amber"|"red", "rag_reasons": ["short reason", ...], "changes": ["what changed since last week", ...], "urgent": ["what needs action in the next 14 days, with owner when known", ...]}
+
+${statusContext(p)}`;
+    const out = await S2.sample.json(prompt, { modelTier: 'default', cache: false, onText: ({ text }) => { run.msg = `Writing… (${text.length} characters)`; scheduleRender(); } });
+    if (!out?.summary) throw { code: 'invalid_json' };
+    const ref = S.db.collection('status_reports').doc();
+    await ref.set({ project: p.id, status: 'draft', generated_at: nowIso(), generated_by: S.myId, run_id: runRef.id, summary: String(out.summary), rag_proposal: ['green', 'amber', 'red'].includes(out.rag_proposal) ? out.rag_proposal : null, rag_reasons: out.rag_reasons || [], changes: out.changes || [], urgent: out.urgent || [], sources: ['Co-Work record: deliverables, milestones, tasks, conflicts, risks, meetings, activity of the last 7 days'], rules_rag: ragOf(p).computed });
+    await runRef.update({ status: 'done', finished_at: nowIso() });
+    run.busy = false; run.msg = 'Draft ready below. Edit it if needed, then publish.';
+    log(p.id, 'Status writer drafted a status summary');
+  } catch (e) { run.busy = false; run.msg = sampleErrorText(e); runRef.update({ status: 'failed', finished_at: nowIso(), error: String(e?.code || 'error') }).catch(() => {}); }
+  render();
+}
+function renderStatusCard(p) {
+  const pub = latestStatus(p.id, 'published'), dr = latestStatus(p.id, 'draft'), ed = canEdit(), run = S3.statusRun[p.id];
+  const draftNewer = dr && (!pub || (dr.generated_at || '') > (pub.published_at || pub.generated_at || ''));
+  const by = (r) => r.generated_by === 'session' || r.generated_by === 'routine' ? 'Status writer (scheduled)' : 'Status writer, run by ' + nameOf(r.generated_by);
+  const body = (r) => `<p style="margin:0 0 8px">${esc(r.edited_summary || r.summary)}</p>
+    ${(r.changes || []).length ? `<div class="small"><b>What changed</b><ul class="list">${r.changes.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>` : ''}
+    ${(r.urgent || []).length ? `<div class="small" style="margin-top:6px"><b>Next 14 days</b><ul class="list">${r.urgent.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>` : ''}
+    <div class="small muted" style="margin-top:8px">${esc(by(r))} · ${esc((r.generated_at || '').slice(0, 10))}${r.published_by ? ` · published by ${esc(nameOf(r.published_by))}` : ''} · Sources: ${esc((r.sources || []).join('; '))}</div>`;
+  let html = `<div class="panel"><h3>Status summary ${ed && S2.sample ? `<button class="btn small" data-act="status-run" data-pid="${esc(p.id)}" ${run?.busy ? 'disabled' : ''}>Write new draft</button>` : ''}</h3>`;
+  if (run) html += `<div class="notice small" style="margin-bottom:8px">${esc(run.msg)}</div>`;
+  if (draftNewer && ed) {
+    html += `<div class="notice small" style="margin-bottom:10px"><b>Draft waiting for the PM</b> · proposed RAG <span class="ragpill ${esc(dr.rag_proposal || '')}"><span class="dot ${esc(dr.rag_proposal || '')}"></span>${esc((dr.rag_proposal || '?').toUpperCase())}</span>${(dr.rag_reasons || []).length ? ': ' + esc(dr.rag_reasons.join('; ')) : ''}</div>`;
+    if (S3.editStatus === dr.id) html += `<textarea id="st-edit" rows="7">${esc(dr.edited_summary || dr.summary)}</textarea><div class="row" style="margin-top:6px"><button class="btn small primary" data-act="status-publish" data-id="${esc(dr.id)}">Publish</button><button class="btn small" data-act="status-cancel">Cancel</button></div>`;
+    else html += body(dr) + `<div class="row" style="margin-top:8px"><button class="btn small primary" data-act="status-publish" data-id="${esc(dr.id)}">Publish</button><button class="btn small" data-act="status-edit" data-id="${esc(dr.id)}">Edit</button>${dr.rag_proposal && dr.rag_proposal !== ragOf(p).rag ? `<button class="btn small" data-act="status-rag" data-id="${esc(dr.id)}">Use proposed RAG (${esc(dr.rag_proposal.toUpperCase())})</button>` : ''}<button class="btn small" data-act="status-discard" data-id="${esc(dr.id)}">Discard</button></div>`;
+    if (pub) html += `<hr style="border:0;border-top:1px solid var(--line);margin:14px 0"><div class="small muted" style="margin-bottom:6px">Currently published</div>`;
+  }
+  if (pub) html += body(pub);
+  else if (!draftNewer) html += `<p class="small muted">No status published yet. The Status writer drafts one every Monday at 07:00 (Brussels) and whenever a PM clicks “Write new draft”.</p>`;
+  return html + '</div>';
+}
+
+// ---------------- notifications (in-app; email digests stay off until KMOP approves sending)
+function notifications() {
+  const out = [], mine = myProjectIds(), role = myRole(), t0 = today();
+  const add = (n) => out.push(n);
+  for (const t of S.tasks) {
+    if (t.status === 'done' || !(t.owner_user === S.myId || (t.watchers || []).includes(S.myId))) continue;
+    if (!t.due) continue;
+    const d = daysBetween(t0, parseDay(t.due));
+    if (d < 0) add({ key: `n:task:${t.id}:late:${t.due}`, sev: 'red', t: `Overdue: ${t.title}`, s: `${proj(t.project)?.acronym || ''} · was due ${fmtDay(t.due)}`, project: t.project, task: t.id });
+    else if (d <= 1) add({ key: `n:task:${t.id}:1:${t.due}`, sev: 'amber', t: `Due ${d === 0 ? 'today' : 'tomorrow'}: ${t.title}`, s: proj(t.project)?.acronym || '', project: t.project, task: t.id });
+    else if (d <= 7) add({ key: `n:task:${t.id}:7:${t.due}`, sev: 'blue', t: `Due this week: ${t.title}`, s: `${proj(t.project)?.acronym || ''} · ${fmtDay(t.due)}`, project: t.project, task: t.id });
+  }
+  for (const p of S.projects) {
+    const involved = mine.has(p.id) || role === 'admin';
+    if (involved) {
+      for (const d of pDels(p.id)) {
+        const st = delState(p, d); if (st.done || st.days == null || st.days < 0) continue;
+        const bucket = [1, 7, 14, 30].find(b => st.days <= b); if (!bucket) continue;
+        const ours = isKmop(d.lead) || p.role === 'COORDINATOR';
+        if (!ours) continue;
+        add({ key: `n:del:${d.id}:${bucket}:${dueM(p, d)}`, sev: bucket <= 7 ? 'red' : bucket <= 14 ? 'amber' : 'blue', t: `${p.acronym} ${d.code} due in ${st.days} days`, s: `${d.title} · ${DSTATUS[d.status] || 'status not recorded'}${!isKmop(d.lead) && p.role === 'COORDINATOR' ? ` · lead ${d.lead}: draft a reminder` : ''}`, project: p.id, tab: 'deliverables', remind: !isKmop(d.lead) && p.role === 'COORDINATOR' ? d.id : null });
+      }
+      for (const a of meetingAlerts(p)) add({ ...a, key: 'n:' + a.key, t: `${p.acronym}: ${a.t}`, project: p.id, tab: 'meetings' });
+      const newS = openSugg(p.id).filter(s => (s.created_at || '') > (prefs().suggSeen?.[p.id] || ''));
+      if (newS.length) add({ key: `n:sugg:${p.id}:${newS.length}:${newS[newS.length - 1].created_at}`, sev: 'blue', t: `${newS.length} new agent suggestions in ${p.acronym}`, s: 'Accept, edit or reject them', project: p.id, tab: 'meetings' });
+      const dr = latestStatus(p.id, 'draft'), pub = latestStatus(p.id, 'published');
+      if (dr && (!pub || dr.generated_at > (pub.published_at || pub.generated_at))) add({ key: `n:status:${dr.id}`, sev: 'blue', t: `Status summary draft for ${p.acronym}`, s: 'Review and publish it', project: p.id, tab: 'overview' });
+      for (const d of draftsFor(p.id).filter(d => d.status === 'draft')) add({ key: `n:draft:${d.id}`, sev: 'blue', t: `Draft baseline for ${p.acronym} waiting for review`, s: d.baseline_label || '', project: p.id, review: d.id });
+    }
+    if (['admin', 'smt', 'hou'].includes(role) && ragOf(p).rag === 'red') add({ key: `n:red:${p.id}`, sev: 'red', t: `${p.acronym} is Red`, s: ragOf(p).reasons.slice(0, 2).join('; '), project: p.id, tab: 'overview' });
+  }
+  const seen = prefs().seen || {};
+  for (const n of out) n.unread = !seen[n.key];
+  const rank = { red: 0, amber: 1, blue: 2 };
+  return out.sort((a, b) => (b.unread - a.unread) || rank[a.sev] - rank[b.sev]);
+}
+const unreadCount = () => notifications().filter(n => n.unread).length;
+function renderNotifications() {
+  const ns = notifications(), un = ns.filter(n => n.unread).length;
+  return `<div class="phead"><h1>Notifications</h1><div class="muted">${un} unread · in-app reminders for your tasks, your projects' deliverables (30/14/7/1 days), minutes not uploaded (day 5 reminder, day 8 escalation), agent suggestions and status drafts${['admin', 'smt', 'hou'].includes(myRole()) ? ', and projects that are Red' : ''}.</div></div>
+  <div class="toolbar"><button class="btn" data-act="n-readall" ${un ? '' : 'disabled'}>Mark all as read</button><span class="grow"></span><label class="small row">Email digest <select id="digest-freq"><option value="off" ${(prefs().digest || 'off') === 'off' ? 'selected' : ''}>Off</option><option value="daily" ${prefs().digest === 'daily' ? 'selected' : ''}>Daily</option><option value="weekly" ${prefs().digest === 'weekly' ? 'selected' : ''}>Weekly</option></select></label></div>
+  ${prefs().digest && prefs().digest !== 'off' ? '<p class="small muted">Your choice is saved. Email digests start once KMOP approves sending email from system@kmop.org; until then everything is shown here.</p>' : ''}
+  ${!myProjectIds().size && myRole() !== 'admin' ? '<div class="notice small" style="margin-bottom:12px">You are not linked to any project yet, so only your own tasks notify you. An Editor can link you to projects in Team & access.</div>' : ''}
+  ${ns.length ? `<div class="panel"><div class="urgent">${ns.map(n => `<div class="uitem" style="${n.unread ? '' : 'opacity:.6'}"><span class="stripe ${n.sev}"></span><div style="min-width:0"><div class="t">${n.unread ? '● ' : ''}${esc(n.t)}</div><div class="s">${esc(n.s || '')}</div></div><div class="acts">${n.remind ? `<button class="btn small" data-act="remind" data-id="${esc(n.remind)}">Draft reminder</button>` : ''}<button class="btn small" data-act="n-open" data-key="${esc(n.key)}">Open</button></div></div>`).join('')}</div></div>` : '<div class="empty">Nothing to report. 🎉</div>'}`;
+}
+function openNotification(key) {
+  const n = notifications().find(x => x.key === key); if (!n) return;
+  savePrefs({ seen: { ...(prefs().seen || {}), [key]: nowIso() }, ...(n.key.startsWith('n:sugg:') ? { suggSeen: { ...(prefs().suggSeen || {}), [n.project]: nowIso() } } : {}) });
+  if (n.task) openTask(n.task);
+  else if (n.review) { go({ view: 'project', id: n.project, tab: 'documents' }); openReview(n.review); }
+  else go({ view: 'project', id: n.project, tab: n.tab || 'overview' });
+}
+function renderReminder() {
+  const d = S.dels.find(x => x.id === S3.reminder); if (!d) return '';
+  const p = proj(d.project), due = dueM(p, d);
+  const text = `Subject: ${p.acronym} – ${d.code} ${d.title} – due ${mLabel(p, due)} (M${due})\n\nDear ${d.lead} team,\n\nA friendly reminder from the coordinator: ${d.code} “${d.title}” is due at the end of ${mLabel(p, due)} (M${due}). Its status in our tracker is “${DSTATUS[d.status] || 'not recorded'}”.\n\nCould you share the draft for internal review, or let us know if you expect any delay, by ${fmtDay(iso(new Date(mEnd(p, due) - 14 * 86400000)))}?\n\nThank you,\n${S.me?.name || ''}\nKMOP Policy Center, on behalf of the ${p.acronym} coordination`;
+  return `<div class="scrim" data-act="remind-close"></div><aside class="drawer" role="dialog" aria-label="Reminder draft"><header><b>Reminder draft</b><button class="btn small" data-act="remind-close">Close</button></header><div class="body"><p class="small muted">Co-Work never sends emails to partners. Copy this text into the project email (project name in the subject, as KMOP convention requires).</p><textarea id="remind-text" rows="16">${esc(text)}</textarea><button class="btn primary" data-act="remind-copy" style="justify-self:start">Copy text</button></div></aside>`;
+}
+
+// ---------------- portfolio and team portfolio
+function portfolioRows(ps) {
+  return ps.map(p => {
+    const rg = ragOf(p), cm = curM(p), dels = pDels(p.id);
+    const timePct = Math.max(0, Math.min(100, Math.round(cm / p.duration * 100)));
+    const donePct = dels.length ? Math.round(dels.filter(d => DDONE.has(d.status)).length / dels.length * 100) : 0;
+    const lu = lastUpdate(p), stale = !lu || daysBetween(parseDay(lu.slice(0, 10)), today()) > 14;
+    return { p, rg, cm, timePct, donePct, lu, stale, od: overdueCount(p), st: latestStatus(p.id, 'published') };
+  });
+}
+function renderPortfolio(scope) {
+  const role = myRole(), team = scope === 'team';
+  const ps = team ? teamProjects() : S.projects;
+  if (team && !myMember()?.unit) return `<div class="later-card"><h2>Team portfolio</h2><p class="muted">Your unit is not set. An Editor sets it in Team & access; projects then appear here when they belong to your unit or to colleagues in it.</p></div>`;
+  const rows = portfolioRows(ps), admin = S.isAdmin || S.isOwner;
+  const units = [...new Set([...S.members.map(m => m.unit), ...S.projects.map(p => p.unit)].filter(Boolean))].sort();
+  const t0 = today(), horizon = 90;
+  const deadlines = [];
+  for (const p of ps) for (const x of [...pDels(p.id).map(d => ({ ...d, kind: 'Deliverable', done: DDONE.has(d.status) })), ...pMss(p.id).map(m => ({ ...m, kind: 'Milestone', done: m.status === 'achieved' }))]) {
+    const due = dueM(p, x); if (due == null || x.done) continue;
+    const days = daysBetween(t0, mEnd(p, due)); if (days > horizon) continue;
+    deadlines.push({ p, x, due, days });
+  }
+  deadlines.sort((a, b) => a.days - b.days);
+  const risks = S.risks.filter(r => ps.some(p => p.id === r.project) && r.status !== 'closed').sort((a, b) => (/high/i.test(b.impact) - /high/i.test(a.impact)) || (/high/i.test(b.likelihood) - /high/i.test(a.likelihood)));
+  const decisions = ps.flatMap(p => [...pConf(p.id).map(c => ({ p, t: `Sources disagree: ${c.object} · ${c.field}`, tab: 'overview' })), ...draftsFor(p.id).filter(d => d.status === 'draft').map(d => ({ p, t: `Confirm the baseline from ${d.baseline_label || 'the GA'}`, review: d.id })), ...pTasks(p.id).filter(t => t.coordinator_blocker && t.status !== 'done' && t.since && daysBetween(parseDay(t.since), t0) > 30).map(t => ({ p, t: `Coordinator blocker for ${daysBetween(parseDay(t.since), t0)} days: ${t.title}`, task: t.id }))]);
+  const people = team ? S.members.filter(m => norm(m.unit) === norm(myMember()?.unit)) : S.members;
+  const load = people.map(m => { const ts = S.tasks.filter(t => t.owner_user === m.id && t.status !== 'done'); return { m, open: ts.length, late: ts.filter(taskOverdue).length }; }).sort((a, b) => b.open - a.open);
+  return `<div class="phead"><h1>${team ? `Team portfolio · ${esc(myMember().unit)}` : 'Portfolio'}</h1><div class="muted">${fmtDay(iso(t0))} · ${ps.length} projects · ${rows.filter(r => r.rg.rag === 'red').length} red, ${rows.filter(r => r.rg.rag === 'amber').length} amber, ${rows.filter(r => r.rg.rag === 'green').length} green</div></div>
+  <div class="toolbar"><button class="btn" disabled title="Arrives in Phase 6">Generate management report · Phase 6</button></div>
+  <div class="panel" style="padding:0;margin-bottom:18px"><div class="tablewrap"><table><thead><tr><th style="padding-left:16px">Project</th><th>RAG</th><th>KMOP role</th><th>PM</th>${!team ? '<th>Unit</th>' : ''}<th>Month</th><th>Time elapsed vs deliverables done</th><th>Overdue</th><th>Last update</th><th>Status summary</th></tr></thead><tbody>${rows.map(r => `<tr class="click" data-act="open" data-id="${esc(r.p.id)}"><td style="padding-left:16px"><b>${esc(r.p.acronym)}</b><div class="small muted">${esc(r.p.programme || '')} · ${esc(r.p.entity || '')}</div></td>
+    <td title="${esc(r.rg.reasons.join('\n'))}"><span class="ragpill ${r.rg.rag}"><span class="dot ${r.rg.rag}"></span>${r.rg.rag.toUpperCase()}</span>${r.rg.override ? '<div class="small muted">override</div>' : ''}</td>
+    <td>${roleBadge(r.p)}</td><td class="small">${esc(r.p.pm || '—')}</td>
+    ${!team ? `<td>${admin ? `<select data-punit="${esc(r.p.id)}" aria-label="Unit of ${esc(r.p.acronym)}"><option value="">—</option>${units.map(u => `<option ${r.p.unit === u ? 'selected' : ''}>${esc(u)}</option>`).join('')}</select>` : esc(r.p.unit || '—')}</td>` : ''}
+    <td class="mono">M${r.cm}/${r.p.duration}</td>
+    <td style="min-width:170px"><div class="small mono">${r.timePct}% time · ${r.donePct}% done</div><div class="meter" style="position:relative"><i style="width:${r.donePct}%"></i><span style="position:absolute;top:-2px;bottom:-2px;left:${r.timePct}%;width:2px;background:var(--gold)" title="Time elapsed"></span></div></td>
+    <td>${r.od ? `<span class="count">${r.od}</span>` : '—'}</td>
+    <td class="small ${r.stale ? '' : 'muted'}" style="${r.stale ? 'color:var(--red)' : ''}">${r.lu ? fmtDay(r.lu.slice(0, 10)) : 'never'}${r.stale ? '<div>no update for 14+ days</div>' : ''}</td>
+    <td class="small muted">${r.st ? fmtDay((r.st.published_at || r.st.generated_at).slice(0, 10)) : 'none yet'}</td></tr>`).join('') || `<tr><td colspan="10" class="empty">No projects${team ? ' in your unit yet' : ''}.</td></tr>`}</tbody></table></div></div>
+  <div class="grid2"><div class="stack">
+    <div class="panel"><h3>EC deadlines · next ${horizon} days · ${deadlines.length}</h3>${deadlines.length ? deadlines.map(d => `<div class="kpi" data-act="open" data-id="${esc(d.p.id)}" style="cursor:pointer"><div><b>${esc(d.p.acronym)} ${esc(d.x.code)}</b> ${esc(d.x.title)}<div class="small muted">${d.x.kind}${d.x.lead ? ' · ' + esc(d.x.lead) : ''} · ${d.x.kind === 'Deliverable' ? esc(DSTATUS[d.x.status] || 'not recorded') : esc(MSTATUS[d.x.status] || 'not recorded')}${d.p.funding_model === 'lump_sum' && d.x.kind === 'Deliverable' ? ' · lump sum' : ''}</div></div><div class="mono small" style="${d.days < 0 ? 'color:var(--red)' : ''}">M${d.due} · ${mLabel(d.p, d.due)}<div>${d.days < 0 ? `${-d.days} days late` : `in ${d.days} days`}</div></div></div>`).join('') : '<div class="empty small">No deadlines in the next 90 days.</div>'}</div>
+    <div class="panel"><h3>Needs a decision · ${decisions.length}</h3>${decisions.length ? decisions.map(x => `<div class="kpi"><div><b>${esc(x.p.acronym)}</b> ${esc(x.t)}</div>${x.review ? `<button class="btn small" data-act="review" data-id="${esc(x.review)}">Review</button>` : x.task ? `<button class="btn small" data-act="task" data-id="${esc(x.task)}">Open</button>` : `<button class="btn small" data-act="open" data-id="${esc(x.p.id)}">Open</button>`}</div>`).join('') : '<div class="empty small">Nothing waiting for a decision.</div>'}</div>
+  </div><div class="stack">
+    <div class="panel"><h3>Top risks · ${risks.length}</h3>${risks.length ? risks.slice(0, 8).map(r => `<div class="kpi"><div class="small"><b>${esc(proj(r.project)?.acronym || '')}</b> ${esc(r.description)}</div><div class="small muted">${esc([r.likelihood, r.impact].filter(Boolean).join(' / ') || '')}</div></div>`).join('') : '<div class="empty small">No risks recorded yet. They come from the DoA risk table (onboarding) and from minutes.</div>'}</div>
+    <div class="panel"><h3>Workload · open tasks per person</h3>${load.length ? load.map(l => `<div class="kpi"><div>${esc(nameOf(l.m.id))}<div class="small muted">${esc(APP_ROLES[l.m.role] || '')}${l.m.unit ? ' · ' + esc(l.m.unit) : ''}</div></div><div class="mono small">${l.open} open${l.late ? ` · <span style="color:var(--red)">${l.late} overdue</span>` : ''}</div></div>`).join('') : '<div class="empty small">Add colleagues in Team & access to see workload.</div>'}</div>
+  </div></div>`;
+}
+
+// ---------------- meetings: plan a meeting, add minutes link
+function renderMeetingForm(p) {
+  if (!canEdit()) return '';
+  return `<div class="panel"><h3>Add a meeting</h3><form id="meet-add" data-pid="${esc(p.id)}" class="field"><div class="fields2"><input type="text" id="mt-title" placeholder="e.g. SC meeting 4" aria-label="Meeting title"><input type="date" id="mt-date" aria-label="Date"></div><div class="fields2"><select id="mt-type" aria-label="Type"><option value="SC">Steering Committee</option><option value="TPM">Transnational partner meeting</option><option value="kick-off">Kick-off</option><option value="training">Training</option><option value="workshop">Workshop</option><option value="conference">Conference / multiplier event</option><option value="other">Other</option></select><select id="mt-format" aria-label="Format"><option>Online</option><option>Face-to-face</option><option>Hybrid</option></select></div><button class="btn primary" type="submit" style="justify-self:start">Add meeting</button><span class="small muted">After the meeting, Co-Work reminds you on day 5 to upload the minutes and escalates on day 8.</span></form></div>`;
+}
+
 // pins: kept per person in their private subtree (falls back to this browser)
 async function togglePin(id) {
   const set = new Set(S.pins); set.has(id) ? set.delete(id) : set.add(id); S.pins = [...set]; render();
   try { localStorage.setItem('cowork-pins', JSON.stringify(S.pins)); } catch {}
-  if (S.db && S.myId) { try { await queued('prefs', () => S.db.doc(`data/users/${S.myId}/prefs`).set({ pins: S.pins })); } catch {} }
+  savePrefs({ pins: S.pins });
 }
 
 // ============================================================ boot
@@ -1303,6 +1580,7 @@ async function togglePin(id) {
   sub('handled', 'handled'); sub('overrides', 'overrides'); sub('kpi_values', 'kpiv'); sub('members', 'members');
   sub('activity', 'activity', q => q.orderBy('at', 'desc').limit(300));
   sub('drafts', 'drafts'); sub('suggestions', 'sugg'); sub('meetings', 'meetings'); sub('risks', 'risks'); sub('agent_runs', 'runs', q => q.orderBy('at', 'desc').limit(200));
-  if (S.myId) db.doc(`data/users/${S.myId}/prefs`).onSnapshot(s => { if (s.exists && Array.isArray(s.data().pins)) { S.pins = s.data().pins; scheduleRender(); } }, () => {});
+  if (S.myId) db.doc(`data/users/${S.myId}/prefs`).onSnapshot(s => { if (s.exists) { S.prefs = { ...s.data() }; if (Array.isArray(S.prefs.pins)) S.pins = S.prefs.pins; scheduleRender(); } }, () => {});
+  sub('status_reports', 'statusReports');
 })();
 </script>
