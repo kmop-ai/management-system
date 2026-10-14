@@ -206,14 +206,14 @@ const PSTATUS = [['implementation','Under implementation'],['soon','Soon to star
 const APP_ROLES = { admin: 'Admin', smt: 'Senior management', hou: 'Head of unit', pm: 'PM / Researcher', finance: 'Finance', viewer: 'Viewer' };
 const TABS = [
   ['overview','Overview'], ['plan','Plan'], ['work','Work'], ['deliverables','Deliverables & milestones'],
-  ['meetings','Meetings & actions', 2], ['kpis','KPIs'], ['risks','Risks', 3], ['partners','Partners'],
+  ['meetings','Meetings & actions'], ['kpis','KPIs'], ['risks','Risks'], ['partners','Partners'],
   ['inbox','Inbox', 4], ['documents','Documents'], ['activity','Activity'],
 ];
 
 // ============================================================ state
 const S = {
   db: null, user: null, me: null, myId: null, canWrite: true, isAdmin: false, isOwner: false, noDb: false, ready: {},
-  projects: [], dels: [], mss: [], tasks: [], conflicts: [], handled: [], overrides: [], kpiv: [], members: [], activity: [],
+  projects: [], dels: [], mss: [], tasks: [], conflicts: [], handled: [], overrides: [], kpiv: [], members: [], activity: [], drafts: [], sugg: [], meetings: [], risks: [], runs: [],
   names: {}, pins: [], prefsVersion: 0,
   route: parseHash(), railOpen: false,
   ui: { q: '', fProg: '', fEnt: '', fPm: '', fRole: '', work: 'list', wOwner: 'all', wStatus: 'open', wWp: '', wq: '', calMonth: null, baseline: {}, dFilter: '', drawer: null, picks: null, confirm: null, mwFilter: 'mine' },
@@ -365,6 +365,7 @@ async function write(fn, okMsg) {
   catch (e) {
     if (e?.code === 'invalid_argument') { S.canWrite = false; toast('This change was refused: you have view-only access.'); render(); }
     else if (e?.code === 'quota_exceeded') toast('The store is full. Delete old items and try again.');
+    else if (e?.code === 'no_target') toast(e.message);
     else toast('Could not save. Check your connection and try again.');
     return false;
   }
@@ -476,9 +477,9 @@ function renderProject(p, tab) {
     case 'kpis': body = renderKpis(p); break;
     case 'partners': body = renderPartners(p); break;
     case 'documents': body = renderDocuments(p); break;
-    case 'activity': body = renderActivity(p); break;
-    case 'meetings': body = later('Meetings & actions', 2, 'Meeting list with agenda, minutes and extracted actions, plus the consortium-wide action tracker. The Minutes agent will read new minutes in Drive and propose actions for the PM to confirm. Until then, record actions as tasks in Work.'); break;
-    case 'risks': body = later('Risks', 3, 'Risk log from the DoA risk table plus new risks, with likelihood, impact, score, owner, mitigation and a heat-map.'); break;
+    case 'activity': body = renderActivity(p) + renderRuns(p); break;
+    case 'meetings': body = renderMeetings(p); break;
+    case 'risks': body = renderRisks(p); break;
     case 'inbox': body = later('Inbox', 4, 'Consortium group emails received at system@kmop.org, linked to this project, with an extract per thread: decisions, deadlines and requests to KMOP.'); break;
     default: body = renderOverview(p, rg);
   }
@@ -502,7 +503,9 @@ function renderOverview(p, rg) {
   const kv = (k) => S.kpiv.find(x => x.id === `${p.id}__${k.id}`);
   return `<div class="grid2">
     <div class="stack">
+      ${draftsFor(p.id).filter(d => d.status === 'draft').map(d => `<div class="notice"><b>A draft baseline is waiting for review</b> (${esc(d.baseline_label || 'from onboarding')}). <button class="btn small primary" data-act="review" data-id="${esc(d.id)}">Review</button></div>`).join('')}
       <div class="panel"><h3>Needs attention <span class="small" style="text-transform:none;letter-spacing:0">${u.length} items</span></h3>${renderUrgentList(p, u)}</div>
+      ${openSugg(p.id).length ? `<div class="panel"><h3>Agent suggestions to review · ${openSugg(p.id).length} <button class="btn small" data-act="tab" data-tab="meetings">Review all</button></h3><div class="urgent">${openSugg(p.id).slice(0, 4).map(renderSuggestion).join('')}</div></div>` : ''}
       <div class="panel"><h3>Plan vs actual <button class="btn small" data-act="tab" data-tab="plan">Open plan</button></h3>${gantt(p, { compact: true })}</div>
     </div>
     <div class="stack">
@@ -679,10 +682,6 @@ function renderPartners(p) {
   ${gone.length ? `<p class="small muted">Not in ${esc(v)}: ${gone.map(x => esc(x.short) + (x.note ? ' (' + esc(x.note) + ')' : '')).join('; ')}</p>` : ''}
   <p class="small muted">Contact roles, CA/PA signature status, payments (Coordinator, Finance only) and partner reliability notes come with Drive onboarding in Phase 2.</p>`;
 }
-function renderDocuments(p) {
-  return `<div class="panel"><h3>Source documents</h3>${(p.sources || []).map(s => `<div class="kpi"><div><a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.label)} ↗</a></div><div class="small muted">Google Drive</div></div>`).join('')}
-  <p class="small muted" style="margin-top:12px">These links open in Google Drive with your own KMOP account. The full Drive browser for this project and the filing compliance check (KMOP Filing Procedure) arrive in Phases 2 and 5. AnF folders are Finance-only and are never shown here.</p></div>`;
-}
 function renderActivity(p) {
   const a = S.activity.filter(x => x.project === p.id);
   return `<div class="panel"><h3>Activity · last ${a.length}</h3>${a.length ? a.map(x => `<div class="kpi"><div>${esc(x.text)}<div class="small muted">${esc(nameOf(x.by) || (x.source === 'seed' ? 'Seed data' : 'Someone'))} · ${x.source === 'agent' ? 'agent' : x.source === 'email' ? 'email' : 'human'}</div></div><div class="small muted mono">${esc(x.at ? x.at.slice(0, 16).replace('T', ' ') : '')}</div></div>`).join('') : '<div class="empty small">No changes recorded yet. Every change made here is logged with who made it.</div>'}</div>`;
@@ -695,9 +694,10 @@ function renderMyWork() {
   const g = { Overdue: [], Today: [], 'This week': [], Later: [], 'No due date': [] };
   for (const t of mine.sort(sortTasks)) { const d = parseDay(t.due); if (!d) g['No due date'].push(t); else if (d < t0) g.Overdue.push(t); else if (+d === +t0) g.Today.push(t); else if (d <= wk) g['This week'].push(t); else g.Later.push(t); }
   const myProjects = S.projects.filter(p => (S.me?.name && (p.pm === S.me.name || p.pm_support === S.me.name || p.fm === S.me.name)));
-  return `<div class="phead"><h1>My work</h1><div class="muted">Tasks across all projects. Agent suggestions to confirm appear here from Phase 2.</div></div>
+  return `<div class="phead"><h1>My work</h1><div class="muted">Tasks across all projects, and what the agents propose for you to confirm.</div></div>
   <div class="toolbar"><div class="seg"><button class="${S.ui.mwFilter === 'mine' ? 'on' : ''}" data-act="mw" data-v="mine">Assigned to me or watched</button><button class="${S.ui.mwFilter === 'kmop' ? 'on' : ''}" data-act="mw" data-v="kmop">All KMOP tasks</button></div></div>
   ${!mine.length ? `<div class="empty">${S.ui.mwFilter === 'mine' ? 'Nothing is assigned to you yet. Open a project, go to Work, and assign a task to yourself, or watch one.' : 'No open KMOP tasks.'}</div>` : ''}
+  ${openSugg().length ? `<div class="panel" style="margin-bottom:18px"><h3>Agent suggestions waiting for confirmation · ${openSugg().length}</h3><div class="urgent">${openSugg().slice(0, 12).map(renderSuggestion).join('')}</div>${openSugg().length > 12 ? '<p class="small muted">More in each project under Meetings & actions.</p>' : ''}</div>` : ''}
   <div class="stack">${Object.entries(g).filter(([, ts]) => ts.length).map(([k, ts]) => `<div class="panel"><h3>${k} · ${ts.length}</h3>${ts.map(t => { const p = proj(t.project); return `<div class="uitem" data-act="task" data-id="${esc(t.id)}" style="cursor:pointer"><span class="stripe ${k === 'Overdue' ? 'red' : k === 'Today' ? 'amber' : 'blue'}"></span><div style="min-width:0"><div class="t">${esc(t.title)}</div><div class="s"><b>${esc(p?.acronym || '')}</b> · ${esc(ownerLabel(t))}${t.deliverable ? ' · ' + esc(t.deliverable) : ''}</div></div><div class="mono small">${t.due ? fmtDay(t.due) : ''}</div></div>`; }).join('')}</div>`).join('')}
   ${myProjects.length ? `<div class="panel"><h3>Projects you manage</h3>${myProjects.map(p => `<div class="kpi"><a href="#p.${esc(p.id)}" data-act="open" data-id="${esc(p.id)}">${esc(p.acronym)}</a><span class="small">${urgentItems(p).length} items need attention</span></div>`).join('')}</div>` : ''}</div>`;
 }
@@ -728,6 +728,8 @@ function openTask(id) {
 }
 function closeTask() { S.ui.drawer = null; if (commentsUnsub) commentsUnsub(); commentsUnsub = null; commentsFor = null; render(); }
 function renderDrawer() {
+  if (S2.review) return renderReview();
+  if (S2.editSugg) return renderSuggEdit();
   const id = S.ui.drawer; if (!id) return '';
   const t = S.tasks.find(x => x.id === id); if (!t) return '';
   const p = proj(t.project), ed = canEdit(), dis = ed ? '' : 'disabled';
@@ -807,11 +809,26 @@ document.addEventListener('click', async (e) => {
     case 'deltask': S.ui.confirm = 'deltask'; render(); break;
     case 'deltask-no': S.ui.confirm = null; render(); break;
     case 'deltask-yes': { const t = curTask(); const ok = await write(() => S.db.collection('tasks').doc(t.id).delete(), 'Task deleted'); if (ok) { log(t.project, `Deleted task: ${t.title}`); closeTask(); } break; }
+    case 'dfolder': { const p = proj(el.dataset.pid); driveState(p).stack.push({ id: el.dataset.id, title: el.dataset.title }); loadFolder(p); break; }
+    case 'dcrumb': { const p = proj(el.dataset.pid), st = driveState(p); st.stack = st.stack.slice(0, +el.dataset.i + 1); loadFolder(p); break; }
+    case 'drefresh': { const p = proj(el.dataset.pid); try { await S2.mcp?.invalidate(DRIVE); } catch {} loadFolder(p, true); break; }
+    case 'onb-run': runOnboarding(proj(el.dataset.pid)); break;
+    case 'agent-stop': ctls[el.dataset.pid]?.abort(); break;
+    case 'minutes-run': runMinutes(proj(el.dataset.pid), { id: el.dataset.id, title: el.dataset.title, url: el.dataset.url || null }); break;
+    case 'review': openReview(el.dataset.id); break;
+    case 'review-close': S2.review = null; render(); break;
+    case 'review-confirm': confirmReview(); break;
+    case 'review-discard': { const id = S2.review.id; const ok = await write(() => S.db.collection('drafts').doc(id).update({ status: 'discarded', discarded_by: S.myId, discarded_at: nowIso() }), 'Draft discarded'); if (ok) { S2.review = null; render(); } break; }
+    case 'sg-accept': { const sg = S.sugg.find(x => x.id === el.dataset.id); el.disabled = true; await acceptSuggestion(sg); break; }
+    case 'sg-reject': { const id = el.dataset.id, sg = S.sugg.find(x => x.id === id); const ok = await write(() => S.db.collection('suggestions').doc(id).update({ status: 'rejected', decided_by: S.myId, decided_at: nowIso() }), 'Rejected'); if (ok) log(sg.project, `Rejected suggestion: ${sg.title}`); break; }
+    case 'sg-edit': S2.editSugg = el.dataset.id; render(); break;
+    case 'sg-close': S2.editSugg = null; render(); break;
     case 'mdel': { const id = el.dataset.id; await write(() => S.db.collection('members').doc(id).delete(), 'Role removed'); break; }
   }
 });
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && S.ui.drawer) closeTask();
+  if (e.key === 'Escape' && (S2.review || S2.editSugg)) { S2.review = null; S2.editSugg = null; render(); }
+  else if (e.key === 'Escape' && S.ui.drawer) closeTask();
   if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.pitem, .card')) { e.preventDefault(); e.target.click(); }
 });
 async function createTask(pid, title, extra = {}) {
@@ -828,6 +845,8 @@ document.addEventListener('submit', async (e) => {
   else if (f.id === 'sub-add') { const v = document.getElementById('sub-t').value.trim(); if (!v) return; document.getElementById('sub-t').value = ''; document.getElementById('sub-t').blur(); const t = curTask(); taskPatch({ subtasks: [...(t.subtasks || []), { t: v, done: false }] }); }
   else if (f.id === 'link-add') { const url = document.getElementById('link-url').value.trim(), label = document.getElementById('link-label').value.trim(); if (!/^https:\/\//.test(url)) { toast('Paste a link that starts with https://'); return; } document.activeElement?.blur(); const t = curTask(); taskPatch({ links: [...(t.links || []), { url, label }] }, 'link added'); }
   else if (f.id === 'comment-add') { const ta = document.getElementById('c-text'); const text = ta.value.trim(); if (!text) return; ta.value = ''; ta.blur(); const t = curTask(); const ok = await write(() => S.db.collection(`tasks/${t.id}/comments`).add({ text, by: S.myId, at: nowIso() })); if (ok) log(t.project, `Comment on “${t.title}”`); }
+  else if (f.id === 'link-folder') { const url = document.getElementById('folder-url').value.trim(), m = url.match(/folders\/([\w-]+)/); if (!m) { toast('Paste a Google Drive folder link.'); return; } const pid = f.dataset.pid; document.activeElement?.blur(); const ok = await write(() => S.db.collection('projects').doc(pid).update({ drive_url: url, drive_folder_id: m[1] }), 'Folder linked'); if (ok) { delete S2.drive[pid]; log(pid, 'Linked the Drive folder'); } }
+  else if (f.id === 'sg-form') { const s = S.sugg.find(x => x.id === f.dataset.id), v = (id) => document.getElementById(id).value.trim(); const sel = v('sg-del'); const edits = { title: v('sg-title') || s.title, kind: v('sg-kind'), owner: v('sg-owner') || null, owner_kind: v('sg-okind'), due: v('sg-due') || null, description: v('sg-desc') || null, new_status: v('sg-status') || null, deliverable: sel && !sel.startsWith('MS') ? sel : null, target: sel || s.target || null }; document.activeElement?.blur(); await acceptSuggestion(s, edits); S2.editSugg = null; render(); }
   else if (f.id === 'vf-form') { const id = f.dataset.id, url = document.getElementById('vf-url').value.trim(); if (url && !/^https:\/\//.test(url)) { toast('Paste a link that starts with https://'); return; } S.ui.vfFor = null; document.activeElement?.blur(); const d = S.dels.find(x => x.id === id); await patch('deliverables', id, { vf_url: url || null }, `${d.code}: final file link ${url ? 'set' : 'removed'}`, d.project); render(); }
 });
 let searchT = null;
@@ -865,6 +884,11 @@ document.addEventListener('change', async (e) => {
     log(pid, el.dataset.kpi ? `KPI “${k.label}”: current value → ${data.current ?? 'cleared'}` : `KPI “${k.label}”: evidence updated`);
     return;
   }
+  if (el.dataset.onbrole) { const sel = onbSel(el.dataset.pid); if (el.value) { const it = (driveState(proj(el.dataset.pid)).items || []).find(x => x.id === el.dataset.onbrole); sel[el.dataset.onbrole] = { role: el.value, title: el.dataset.title, url: it?.url || null }; } else delete sel[el.dataset.onbrole]; render(); return; }
+  if (el.dataset.rsel) { S2.review.sel[el.dataset.rsel] = el.checked; render(); return; }
+  if (el.dataset.rmode) { S2.review.mode = el.dataset.rmode; render(); return; }
+  if (id === 'r-label') { S2.review.label = el.value; return; }
+  if (id === 'r-date') { S2.review.date = el.value; return; }
   if (el.dataset.mrole) { await write(() => S.db.collection('members').doc(el.dataset.mrole).update({ role: el.value }), 'Role updated'); return; }
   if (el.dataset.munit) { await write(() => S.db.collection('members').doc(el.dataset.munit).update({ unit: el.value.trim() || null })); return; }
   if (el.dataset.sub != null) { const t = curTask(); const s = (t.subtasks || []).map((x, i) => i === +el.dataset.sub ? { ...x, done: el.checked } : x); taskPatch({ subtasks: s }, el.checked ? `subtask done: ${s[+el.dataset.sub].t}` : null); return; }
@@ -888,6 +912,367 @@ document.addEventListener('drop', async (e) => {
   if (t && t.status !== st) await patch('tasks', id, { status: st }, `${t.title}: status → ${TSTATUS[st]}`, t.project);
 });
 
+// ============================================================ Phase 2: Drive, onboarding agent, minutes agent, suggestions
+// Agents propose, people decide: nothing an agent extracts reaches the record
+// until a person accepts it. AnF folders and finance documents are never read.
+const DRIVE = 'Google Drive';
+const FIN_RE = /\b(payment|transfer|invoice|timesheet|budget|bank|financ|receipt|pre-?financing|instal?ment|audit)/i;
+const isAnF = (title) => /^anf\b/i.test(String(title || '').trim());
+const folderIdOf = (p) => p.drive_folder_id || (String(p.drive_url || '').match(/folders\/([\w-]+)/) || [])[1] || null;
+const isFolder = (f) => f.mimeType === 'application/vnd.google-apps.folder';
+const MINUTES_RE = /(minutes|\bmom\b|meeting|kick-?off|\bkom\b|\bsc\b|tpm|steering)/i;
+const ROLE_OPTS = [['', 'Not used'], ['GA', 'Grant Agreement'], ['Annex1', 'Annex 1 / DoA'], ['Amendment', 'Amendment'], ['PWP', 'Project Work Plan'], ['Gantt', 'Gantt chart'], ['KPI', 'KPI table'], ['other', 'Other']];
+const MCP_CODES = ['needs_reauth', 'server_not_connected', 'selection_required', 'not_in_manifest', 'blocked_by_policy', 'approval_required', 'server_unavailable', 'tool_error', 'server_not_found'];
+const S2 = { mcp: null, sample: null, drive: {}, runs: {}, review: null, editSugg: null };
+
+async function mcpCall(tool, input) {
+  if (!S2.mcp) throw { code: 'not_granted', message: 'Google Drive is not available in this view.' };
+  const r = await S2.mcp.callTool(DRIVE, tool, input, { cache: { staleTime: 60000 } });
+  return r.payload ?? r;
+}
+function mcpErrorText(e) {
+  switch (e?.code) {
+    case 'needs_reauth': return 'Your Google Drive connection has expired. Reconnect Google Drive in claude.ai Settings → Connectors, then try again.';
+    case 'server_not_connected': case 'server_not_found': return 'Google Drive is not connected to your Claude account. Add it in claude.ai Settings → Connectors (use your KMOP Google account).';
+    case 'selection_required': return 'You have more than one Google Drive connection. Choose one when Claude asks, then try again.';
+    case 'not_in_manifest': case 'not_granted': return 'You have not allowed KMOP Co-Work to use Google Drive. Allow it from the page’s permissions to browse project files.';
+    case 'blocked_by_policy': return 'Your organisation’s policy blocks this Google Drive action.';
+    case 'approval_required': return 'This Drive call needs your approval. Click the button again and choose Allow.';
+    case 'server_unavailable': return 'Google Drive did not answer in time. Try again in a moment.';
+    case 'tool_error': return 'Google Drive reported a problem: ' + (e.message || 'unknown error');
+    default: return 'Could not reach Google Drive' + (e?.message ? ': ' + e.message : '.');
+  }
+}
+function sampleErrorText(e) {
+  switch (e?.code) {
+    case 'not_granted': case 'sampling_disabled': case 'not_declared': case 'capability_disabled': return 'Claude is not available for agents in this view. Allow KMOP Co-Work to use Claude when it asks.';
+    case 'rate_limited': return 'Claude usage limit reached for now. Try again later.';
+    case 'prompt_too_large': return 'The documents are too long for one run. Select fewer files.';
+    case 'invalid_json': return 'The agent’s answer could not be read as data. Run it again.';
+    case 'refused': return 'Claude declined to process these documents.';
+    case 'cancelled': return 'Stopped.';
+    case 'session_expired': return 'Your Claude session expired. Sign in again.';
+    default: return 'The agent run failed' + (e?.message ? ': ' + e.message : '.') + ' Try again.';
+  }
+}
+const agentErrorText = (e) => e?.code === 'no_files' ? e.message : MCP_CODES.includes(e?.code) ? mcpErrorText(e) : sampleErrorText(e);
+function filesFromPayload(pl) { const f = pl?.files || pl?.items || (Array.isArray(pl) ? pl : []); return f.map(x => ({ id: x.id, title: x.title || x.name || '(untitled)', mimeType: x.mimeType || '', url: x.viewUrl || x.webViewLink || null, modified: x.modifiedTime || null, parentId: x.parentId || null })); }
+function textFromPayload(pl) { if (typeof pl === 'string') return pl; if (!pl) return ''; if (typeof pl.content === 'string') return pl.content; if (Array.isArray(pl.content)) return pl.content.map(c => c.text || '').join('\n'); return pl.text || pl.fileContent || pl.body || JSON.stringify(pl); }
+
+// ---------------- Drive browser
+function driveState(p) { const root = folderIdOf(p); return S2.drive[p.id] || (S2.drive[p.id] = { stack: root ? [{ id: root, title: p.acronym }] : [], items: null, error: null, loading: false, loadedFor: null }); }
+async function loadFolder(p, force) {
+  const st = driveState(p), cur = st.stack[st.stack.length - 1]; if (!cur) return;
+  if (!force && st.loadedFor === cur.id) return;
+  st.loading = true; st.error = null; st.loadedFor = cur.id; st.items = null; scheduleRender();
+  try { const pl = await mcpCall('search_files', { query: `parentId = '${cur.id}'`, excludeContentSnippets: true, pageSize: 100 }); st.items = filesFromPayload(pl).sort((a, b) => (isFolder(b) - isFolder(a)) || a.title.localeCompare(b.title)); }
+  catch (e) { st.error = mcpErrorText(e); st.items = null; }
+  st.loading = false; scheduleRender();
+}
+function onbSel(pid) { const o = (S.ui.onb ||= {}); return o[pid] ||= {}; }
+function renderDocuments(p) {
+  const root = folderIdOf(p), st = driveState(p), sel = onbSel(p.id), ed = canEdit();
+  if (!root) return `<div class="notice">No Drive folder is linked to this project yet.${S.isAdmin ? ' Paste the folder link below.' : ' Ask an Editor to link it.'}</div>${S.isAdmin ? `<form id="link-folder" class="row" data-pid="${esc(p.id)}" style="margin-top:10px"><input type="url" id="folder-url" placeholder="https://drive.google.com/drive/folders/…" style="flex:1"><button class="btn primary" type="submit">Link folder</button></form>` : ''}`;
+  if (!S2.mcp) return `<div class="notice">Google Drive is not available in this view, so the project folder cannot be browsed here. <a href="${esc(p.drive_url)}" target="_blank" rel="noopener">Open the folder in Drive ↗</a></div>`;
+  if (st.loadedFor !== st.stack[st.stack.length - 1]?.id && !st.loading) setTimeout(() => loadFolder(p), 0);
+  const fin = ['finance', 'admin'].includes(myRole());
+  const rows = (st.items || []).map(f => {
+    const folder = isFolder(f), anf = folder && isAnF(f.title), finance = !folder && FIN_RE.test(f.title);
+    if (anf) return `<tr><td style="padding-left:16px">🔒 <b>${esc(f.title)}</b> <span class="small muted">Finance only. Not browsed, not read by agents.</span></td><td></td><td>${fin && f.url ? `<a href="${esc(f.url)}" target="_blank" rel="noopener">Open in Drive ↗</a>` : ''}</td><td></td></tr>`;
+    const role = sel[f.id]?.role || '';
+    return `<tr><td style="padding-left:16px;min-width:240px">${folder ? `<button class="btn small" data-act="dfolder" data-pid="${esc(p.id)}" data-id="${esc(f.id)}" data-title="${esc(f.title)}">📁 ${esc(f.title)}</button>` : esc(f.title)}${finance ? ' <span class="badge" title="Looks like a finance document: agents will not read it">finance</span>' : ''}</td>
+      <td class="small muted mono">${f.modified ? esc(f.modified.slice(0, 10)) : ''}</td>
+      <td>${f.url ? `<a href="${esc(f.url)}" target="_blank" rel="noopener">Open ↗</a>` : ''}</td>
+      <td>${!folder && !finance && ed ? `<select data-onbrole="${esc(f.id)}" data-pid="${esc(p.id)}" data-title="${esc(f.title)}" aria-label="Use for onboarding">${ROLE_OPTS.map(([k, l]) => `<option value="${k}" ${role === k ? 'selected' : ''}>${l}</option>`).join('')}</select>${MINUTES_RE.test(f.title) ? ` <button class="btn small" data-act="minutes-run" data-pid="${esc(p.id)}" data-id="${esc(f.id)}" data-title="${esc(f.title)}" data-url="${esc(f.url || '')}">Extract actions</button>` : ''}` : ''}</td></tr>`;
+  }).join('');
+  const chosen = Object.entries(sel).filter(([, v]) => v.role);
+  const run = S2.runs[p.id], mrun = S2.runs[p.id + ':min'];
+  return `<div class="grid2"><div class="stack"><div class="panel" style="padding:0"><div class="toolbar" style="padding:12px 16px 0">${st.stack.map((c, i) => `<button class="btn small" data-act="dcrumb" data-pid="${esc(p.id)}" data-i="${i}">${esc(c.title)}</button>`).join('<span class="muted">›</span>')}<span class="grow"></span><button class="btn small" data-act="drefresh" data-pid="${esc(p.id)}">Refresh</button><a class="small" href="${esc(p.drive_url)}" target="_blank" rel="noopener">Open in Drive ↗</a></div>
+    ${st.error ? `<div class="notice" style="margin:12px 16px">${esc(st.error)}</div>` : st.loading || !st.items ? '<div class="empty small">Loading folder…</div>' : `<div class="tablewrap"><table><thead><tr><th style="padding-left:16px">Name</th><th>Modified</th><th></th><th>Use for agents</th></tr></thead><tbody>${rows || '<tr><td colspan="4" class="empty">This folder is empty.</td></tr>'}</tbody></table></div>`}</div>
+    <p class="small muted">Files open with your own KMOP Google account. Folders named AnF and files that look like finance documents are never read by agents (GDPR and Finance rules).</p></div>
+  <div class="stack"><div class="panel"><h3>Onboarding agent</h3>
+    <p class="small">Reads the GA / Annex 1 (latest amendment), the PWP and the Gantt you mark on the left and proposes a draft baseline: work packages, tasks, deliverables, milestones, partners, KPIs and risks. You review every difference before anything changes.</p>
+    ${chosen.length ? `<ul class="list small">${chosen.map(([, v]) => `<li><b>${esc(ROLE_OPTS.find(r => r[0] === v.role)?.[1])}</b>: ${esc(v.title)}</li>`).join('')}</ul>` : '<p class="small muted">Mark at least the Annex 1 / DoA in the “Use for agents” column.</p>'}
+    ${run ? `<div class="notice small" style="margin:8px 0">${esc(run.msg)}${run.busy ? ` <button class="btn small" data-act="agent-stop" data-pid="${esc(p.id)}">Stop</button>` : ''}</div>` : ''}
+    ${ed ? `<button class="btn primary" data-act="onb-run" data-pid="${esc(p.id)}" ${!chosen.length || run?.busy || !S2.sample ? 'disabled' : ''}>Run onboarding agent</button>${!S2.sample ? '<p class="small muted">Claude is not available for agents in this view.</p>' : ''}` : ''}
+    ${draftsFor(p.id).length ? `<h3 style="margin-top:16px">Drafts</h3>${draftsFor(p.id).map(d => `<div class="kpi"><div><b>${esc(d.baseline_label || 'Draft baseline')}</b><div class="small muted">${esc(d.status === 'confirmed' ? `Confirmed as ${d.confirmed_as} by ${nameOf(d.confirmed_by) || 'an Editor'}` : d.status === 'discarded' ? 'Discarded' : 'Waiting for review')} · ${esc((d.generated_at || '').slice(0, 10))} · ${esc(d.generated_by === 'session' ? 'Claude (setup run)' : nameOf(d.generated_by))}</div></div><button class="btn small ${d.status === 'draft' ? 'primary' : ''}" data-act="review" data-id="${esc(d.id)}">${d.status === 'draft' ? 'Review' : 'View'}</button></div>`).join('')}` : ''}
+  </div>
+  <div class="panel"><h3>Minutes agent</h3><p class="small">Click <b>Extract actions</b> next to a minutes file to have the agent propose actions, decisions, status changes and risks. They appear under <b>Meetings & actions</b> and in <b>My work</b> for you to accept, edit or reject.</p>${mrun ? `<div class="notice small">${esc(mrun.msg)}</div>` : ''}</div></div></div>`;
+}
+const draftsFor = (pid) => S.drafts.filter(d => d.project === pid).sort((a, b) => (b.generated_at || '').localeCompare(a.generated_at || ''));
+
+// ---------------- agent runs
+const ctls = {};
+async function readForAgent(files) {
+  const parts = []; let total = 0; const LIMIT = 200000;
+  for (const f of files) {
+    if (FIN_RE.test(f.title) || isAnF(f.title)) continue;
+    let text = textFromPayload(await mcpCall('read_file_content', { fileId: f.id }));
+    const room = Math.max(0, LIMIT - total); let cut = false;
+    if (text.length > room) { text = text.slice(0, room); cut = true; }
+    total += text.length;
+    parts.push({ ...f, text, cut });
+    if (total >= LIMIT) break;
+  }
+  return parts;
+}
+const ONB_FORMAT = `{"baseline_label": string, "fields": {"acronym","title","grant_no","call","type_of_action","funding_model" ("lump_sum"|"actual_costs"),"authority","start_month" ("YYYY-MM"),"duration" (months)} — each {"value": ..., "cite": CITE} or null,
+"wps": [{"code":"WP1","title","lead","start":1,"end":36,"cite":CITE,"tasks":[{"code":"T1.1","title","lead","start","end","cite":CITE}]}],
+"deliverables": [{"code":"D1.1","title","wp":"WP1","lead","type" ("R"|"DEM"|"DEC"|"DATA"|...),"diss" ("PU"|"SEN"|...),"due_month":18,"cite":CITE}],
+"milestones": [{"code":"MS1","title","wp","lead","due_month","verification","cite":CITE}],
+"partners": [{"name","short","country" (ISO-2),"role" ("COO"|"BEN"|"AE"|"AP"),"pic","cite":CITE}],
+"kpis": [{"label","target" (number),"unit","so","cite":CITE}],
+"risks": [{"description","likelihood","impact","mitigation","cite":CITE}],
+"not_found": [string], "notes": [string]}
+where CITE = {"file_id": string, "file_title": string, "loc": "page/section/table", "quote": "verbatim, at most 200 characters"}`;
+async function runOnboarding(p) {
+  const sel = Object.entries(onbSel(p.id)).filter(([, v]) => v.role).map(([id, v]) => ({ id, title: v.title, role: v.role, url: v.url || null }));
+  const key = p.id, run = S2.runs[key] = { busy: true, msg: 'Reading the selected files from Drive…' }; render();
+  const ctl = ctls[key] = new AbortController();
+  const runRef = S.db.collection('agent_runs').doc();
+  try {
+    await runRef.set({ agent: 'onboarding', project: p.id, by: S.myId, at: nowIso(), status: 'running', files: sel.map(f => ({ id: f.id, title: f.title, role: f.role })) });
+    const parts = await readForAgent(sel);
+    if (!parts.length) throw { code: 'no_files', message: 'None of the selected files could be read.' };
+    run.msg = `Read ${parts.length} file${parts.length > 1 ? 's' : ''}${parts.some(x => x.cut) ? ' (long files were shortened)' : ''}. The agent is extracting the baseline; this can take a few minutes…`; render();
+    const prompt = `You are the Onboarding agent of KMOP Co-Work, the project hub of KMOP (Brussels/Athens). Extract the baseline of the EU-funded project ${p.acronym} (grant ${p.grant_no || 'unknown'}) from the documents below.
+Rules:
+- Use ONLY these documents. If a fact is not stated, use null and list it in "not_found". Never guess.
+- Source hierarchy: the latest signed Grant Agreement / Annex 1 including amendments wins over the PWP, which wins over other documents. If two documents disagree, take the higher one and explain the disagreement in "notes".
+- Months are GA project months (M1 = the start month), as integers.
+- Every fact carries CITE with a verbatim quote of at most 200 characters and where it is (page, section, table).
+- Reply with ONLY one JSON object in this format:
+${ONB_FORMAT}
+
+${parts.map(f => `=== FILE file_id=${f.id} title="${f.title}" role=${f.role}${f.cut ? ' (shortened)' : ''} ===\n${f.text}`).join('\n\n')}`;
+    const out = await S2.sample.json(prompt, { modelTier: 'complex', signal: ctl.signal, cache: false, onText: ({ text }) => { run.msg = `The agent is writing the draft… (${Math.round(text.length / 1000)}k characters so far)`; scheduleRender(); } });
+    if (!out || typeof out !== 'object' || !Array.isArray(out.deliverables)) throw { code: 'invalid_json', message: 'no deliverables in the answer' };
+    const ref = S.db.collection('drafts').doc();
+    await ref.set({ project: p.id, status: 'draft', generated_at: nowIso(), generated_by: S.myId, run_id: runRef.id, sources: parts.map(f => ({ file_id: f.id, title: f.title, role: f.role, url: f.url, shortened: f.cut })), ...out });
+    await runRef.update({ status: 'done', finished_at: nowIso(), counts: { wps: (out.wps || []).length, deliverables: out.deliverables.length, milestones: (out.milestones || []).length, partners: (out.partners || []).length }, draft_id: ref.id });
+    run.busy = false; run.msg = `Draft ready: ${out.deliverables.length} deliverables, ${(out.milestones || []).length} milestones, ${(out.wps || []).length} work packages.`;
+    log(p.id, `Onboarding agent produced a draft baseline from ${parts.length} file(s)`);
+    openReview(ref.id);
+  } catch (e) {
+    run.busy = false; run.msg = agentErrorText(e);
+    runRef.update({ status: 'failed', finished_at: nowIso(), error: String(e?.code || 'error') }).catch(() => {});
+  }
+  render();
+}
+async function runMinutes(p, file) {
+  const key = p.id + ':min', run = S2.runs[key] = { busy: true, msg: `Reading “${file.title}”…` }; render();
+  const runRef = S.db.collection('agent_runs').doc();
+  try {
+    await runRef.set({ agent: 'minutes', project: p.id, by: S.myId, at: nowIso(), status: 'running', files: [{ id: file.id, title: file.title }] });
+    const [part] = await readForAgent([file]);
+    if (!part) throw { code: 'no_files', message: 'This file cannot be read by agents.' };
+    run.msg = 'The Minutes agent is extracting actions…'; render();
+    const open = pTasks(p.id).filter(t => t.status !== 'done').map(t => '- ' + t.title).join('\n');
+    const prompt = `You are the Minutes → Actions agent of KMOP Co-Work. Read the meeting minutes of the EU project ${p.acronym} below and propose updates for the project manager to confirm.
+Project context: KMOP role ${p.role}; work packages ${(p.wps || []).map(w => w.code + ' ' + w.title).join('; ')}; deliverables ${pDels(p.id).map(d => d.code + ' ' + d.title).join('; ')}; partners ${(p.partners || []).map(x => x.short).join(', ')}.
+Open tasks already tracked (do not repeat these):
+${open || '(none)'}
+Rules: only what the minutes say; never guess owners or dates (null if not stated); dates as YYYY-MM-DD (the meeting year if only day and month are given); every suggestion quotes the minutes verbatim (at most 200 characters).
+Reply with ONLY one JSON object: {"meeting": {"title": string, "date": "YYYY-MM-DD" or null, "type": "kick-off"|"SC"|"TPM"|"other"}, "suggestions": [{"kind": "action"|"status_change"|"risk"|"decision", "title": string, "description": string, "owner": string or null, "owner_kind": "kmop"|"partner"|"unknown", "due": string or null, "wp": string or null, "deliverable": string or null, "target": string or null, "new_status": string or null, "cite": {"loc": string, "quote": string}}]}
+
+=== MINUTES file_id=${file.id} title="${file.title}" ===
+${part.text}`;
+    const out = await S2.sample.json(prompt, { modelTier: 'default', cache: false });
+    const sugg = Array.isArray(out?.suggestions) ? out.suggestions : [];
+    const mref = S.db.collection('meetings').doc(`${p.id}__${file.id}`);
+    await mref.set({ project: p.id, file_id: file.id, title: out?.meeting?.title || file.title, date: out?.meeting?.date || null, type: out?.meeting?.type || 'other', url: file.url || null, extracted_at: nowIso(), extracted_by: S.myId, suggestion_count: sugg.length });
+    for (const s of sugg.slice(0, 60)) await S.db.collection('suggestions').add({ ...s, project: p.id, agent: 'minutes', meeting_id: mref.id, status: 'open', run_id: runRef.id, created_at: nowIso(), cite: { ...(s.cite || {}), file_id: file.id, file_title: file.title, url: file.url || null } });
+    await runRef.update({ status: 'done', finished_at: nowIso(), counts: { suggestions: sugg.length } });
+    run.busy = false; run.msg = `${sugg.length} suggestions from “${file.title}”. Review them in Meetings & actions.`;
+    log(p.id, `Minutes agent read “${file.title}” and proposed ${sugg.length} updates`);
+  } catch (e) {
+    run.busy = false; run.msg = agentErrorText(e);
+    runRef.update({ status: 'failed', finished_at: nowIso(), error: String(e?.code || 'error') }).catch(() => {});
+  }
+  render();
+}
+
+// ---------------- draft review (diff screen)
+function openReview(id) { S2.review = { id, sel: {}, mode: null, label: '', date: '' }; render(); }
+const valOf = (x) => x && typeof x === 'object' && 'value' in x ? x.value : x;
+const citeOf = (x) => x && typeof x === 'object' ? x.cite : null;
+const norm = (v) => v == null ? '' : String(v).trim().toLowerCase().replace(/\s+/g, ' ');
+function itemDiffs(p, c, x, v, fields) {
+  const out = [];
+  for (const f of fields) {
+    if (f === 'due') { if (x.due_month != null && +x.due_month !== dueM(p, c, v)) out.push(['due', 'M' + dueM(p, c, v), 'M' + x.due_month]); continue; }
+    const k = f === 'dissemination' ? 'diss' : f;
+    if (x[k] && norm(x[k]) !== norm(c[k])) out.push([f, c[k], x[k]]);
+  }
+  return out;
+}
+function diffDraft(p, d) {
+  const v = p.active_baseline || 'v1', rows = [];
+  const F = d.fields || {};
+  const cur = { acronym: p.acronym, title: p.title, grant_no: p.grant_no, call: p.call, type_of_action: p.type_of_action, funding_model: p.funding_model, authority: p.authority, start_month: p.start_month, duration: p.duration };
+  for (const k of Object.keys(cur)) { const nv = valOf(F[k]); if (nv == null || nv === '') continue; rows.push({ sec: 'Project', key: 'f:' + k, label: k.replace(/_/g, ' '), cur: cur[k], next: nv, state: cur[k] == null ? 'new' : norm(cur[k]) === norm(nv) ? 'same' : 'changed', cite: citeOf(F[k]) }); }
+  const sections = [['Deliverables', 'd', pDels(p.id), d.deliverables || [], ['title', 'wp', 'lead', 'due', 'type', 'dissemination']], ['Milestones', 'm', pMss(p.id), d.milestones || [], ['title', 'wp', 'due', 'verification']]];
+  for (const [sec, pre, list, next, fields] of sections) {
+    for (const x of next) {
+      const c = list.find(y => norm(y.code) === norm(x.code));
+      if (!c) { rows.push({ sec, key: pre + ':' + x.code, label: x.code, cur: null, next: `${x.title || ''} · ${x.wp || ''}${x.lead ? ' · ' + x.lead : ''} · M${x.due_month ?? '?'}`, state: 'new', cite: x.cite, item: x }); continue; }
+      const diffs = itemDiffs(p, c, x, v, fields);
+      rows.push({ sec, key: pre + ':' + x.code, label: x.code, cur: diffs.length ? diffs.map(z => `${z[0]}: ${z[1] ?? '—'}`).join('\n') : `${c.title} · M${dueM(p, c, v)}`, next: diffs.map(z => `${z[0]}: ${z[2]}`).join('\n'), state: diffs.length ? 'changed' : 'same', cite: x.cite, item: x, docId: c.id });
+    }
+    for (const c of list) if (!next.some(x => norm(x.code) === norm(c.code))) rows.push({ sec, key: pre + 'm:' + c.code, label: c.code, cur: c.title, next: 'Not in the source documents', state: 'missing' });
+  }
+  const listRow = (sec, key, curList, nextList, fmt) => { if (!(nextList || []).length) return; const a = (curList || []).map(fmt).join('\n'), b = nextList.map(fmt).join('\n'); rows.push({ sec, key, label: `${nextList.length} items`, cur: a, next: b, state: norm(a) === norm(b) ? 'same' : 'changed', list: true, cite: nextList[0]?.cite }); };
+  listRow('Work packages', 'wps', p.wps, d.wps, w => `${w.code} ${w.title} · ${w.lead || '?'} · M${w.start}–M${w.end}${(w.tasks || []).length ? ` · ${w.tasks.length} tasks` : ''}`);
+  listRow('Partners', 'partners', (p.partners || []).filter(x => !x.baselines || x.baselines.includes(v)), d.partners, x => `${x.short || x.name} (${x.country || '?'}) ${x.role || ''}`);
+  listRow('KPIs', 'kpis', p.kpis, d.kpis, k => `${k.label}: ${k.target ?? '?'} ${k.unit || ''}`);
+  if ((d.risks || []).length) rows.push({ sec: 'Risks', key: 'risks', label: `${d.risks.length} risks`, cur: `${S.risks.filter(r => r.project === p.id).length} in the risk log`, next: d.risks.map(r => r.description).join('\n'), state: 'new', list: true });
+  return rows;
+}
+function renderReview() {
+  const R = S2.review, d = S.drafts.find(x => x.id === R.id); if (!d) return '';
+  const p = proj(d.project); if (!p) return '';
+  const rows = diffDraft(p, d), open = d.status === 'draft', admin = S.isAdmin || S.isOwner;
+  for (const r of rows) if (!(r.key in R.sel)) R.sel[r.key] = open && (r.state === 'changed' || r.state === 'new');
+  const nextV = 'v' + ((p.baselines || []).length + 1);
+  const counts = rows.reduce((a, r) => (a[r.state] = (a[r.state] || 0) + 1, a), {});
+  const secs = [...new Set(rows.map(r => r.sec))];
+  const order = { changed: 0, new: 1, missing: 2, same: 3 };
+  const cell = (t) => `<div style="white-space:pre-wrap">${esc(t ?? '—')}</div>`;
+  const citeHtml = (c) => c && (c.quote || c.loc) ? `<div class="small muted" style="margin-top:4px">“${esc(String(c.quote || '').slice(0, 220))}”${c.loc ? ` · ${esc(c.loc)}` : ''}${c.file_title ? ` · ${esc(c.file_title)}` : ''}</div>` : '';
+  return `<div class="scrim" data-act="review-close"></div><aside class="drawer" style="width:min(1100px,100%)" role="dialog" aria-label="Review draft baseline">
+    <header><div><b>${esc(p.acronym)} · ${esc(d.baseline_label || 'Draft baseline')}</b><div class="small muted">${counts.changed || 0} changed · ${counts.new || 0} new · ${counts.missing || 0} not in sources · ${counts.same || 0} unchanged · from ${esc((d.sources || []).map(s => s.title).join(', '))}</div></div><button class="btn small" data-act="review-close">Close</button></header>
+    <div class="body">
+      ${(d.notes || []).length || (d.not_found || []).length ? `<div class="notice small">${(d.notes || []).length ? `<b>Agent notes</b><ul class="list">${d.notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}${(d.not_found || []).length ? `<b>Not found in the sources</b><ul class="list">${d.not_found.map(n => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}</div>` : ''}
+      ${secs.map(sec => `<div><h3 style="font-size:15px;margin:8px 0">${esc(sec)}</h3><div class="tablewrap"><table><thead><tr><th style="width:32px"></th><th>Item</th><th>Now in Co-Work</th><th>In the source documents</th></tr></thead><tbody>${rows.filter(r => r.sec === sec).sort((a, b) => order[a.state] - order[b.state]).map(r => `<tr style="${r.state === 'same' ? 'opacity:.6' : ''}"><td>${r.state === 'same' || r.state === 'missing' || !open ? '' : `<input type="checkbox" data-rsel="${esc(r.key)}" ${R.sel[r.key] ? 'checked' : ''} aria-label="Accept ${esc(r.label)}">`}</td><td class="mono"><b>${esc(r.label)}</b><div><span class="status ${r.state === 'changed' ? 'warn' : r.state === 'new' ? 'doing' : r.state === 'missing' ? 'late' : ''}">${r.state === 'missing' ? 'not in sources' : r.state}</span></div></td><td class="small">${cell(r.cur)}</td><td class="small">${r.state === 'same' ? '<span class="muted">Same</span>' : cell(r.next)}${citeHtml(r.cite)}</td></tr>`).join('')}</tbody></table></div></div>`).join('')}
+      ${open ? (admin ? `<div class="panel"><h3>Confirm</h3>
+        <div class="row" style="gap:16px"><label class="row"><input type="radio" name="rmode" ${R.mode !== 'new' ? 'checked' : ''} data-rmode="update"> Correct the current baseline (${esc(p.active_baseline || 'v1')})</label><label class="row"><input type="radio" name="rmode" ${R.mode === 'new' ? 'checked' : ''} data-rmode="new"> Save as a new baseline ${esc(nextV)} (after an amendment); ${esc(p.active_baseline || 'v1')} is kept</label></div>
+        ${R.mode === 'new' ? `<div class="row" style="margin-top:8px"><input type="text" id="r-label" placeholder="Label, e.g. Amendment 2" value="${esc(R.label)}"><input type="date" id="r-date" value="${esc(R.date)}" aria-label="Amendment date"></div>` : ''}
+        <div class="row" style="margin-top:12px"><button class="btn primary" data-act="review-confirm">Apply ${Object.entries(R.sel).filter(([k, x]) => x && rows.some(r => r.key === k)).length} accepted changes</button><button class="btn danger" data-act="review-discard">Discard draft</button></div>
+        <p class="small muted">Rows marked “not in sources” stay as they are. Statuses, forecasts and tasks are never changed by onboarding.</p></div>`
+        : `<div class="notice small">An Editor of KMOP Co-Work confirms baselines. Ask the owner to give you Editor access, or to review this draft.</div>`) : `<div class="notice small">${d.status === 'confirmed' ? `Confirmed as ${esc(d.confirmed_as)} on ${esc((d.confirmed_at || '').slice(0, 10))}.` : 'Discarded.'}</div>`}
+    </div></aside>`;
+}
+async function confirmReview() {
+  const R = S2.review, d = S.drafts.find(x => x.id === R.id), p = proj(d.project);
+  const rows = diffDraft(p, d).filter(r => R.sel[r.key] && r.state !== 'same' && r.state !== 'missing');
+  const curV = p.active_baseline || 'v1', isNew = R.mode === 'new', v = isNew ? 'v' + ((p.baselines || []).length + 1) : curV;
+  if (isNew && !R.label.trim()) { toast('Give the new baseline a label, e.g. “Amendment 2”.'); return; }
+  const src = `Onboarding: ${(d.sources || []).map(s => s.title).join(', ')}`;
+  const ok = await write(async () => {
+    const pUpd = {};
+    for (const r of rows) {
+      if (r.key.startsWith('f:')) pUpd[r.key.slice(2)] = r.key === 'f:duration' ? +r.next : r.next;
+      else if (/^[dm]:/.test(r.key)) {
+        const coll = r.key[0] === 'd' ? 'deliverables' : 'milestones', x = r.item;
+        if (r.docId) {
+          const c = (coll === 'deliverables' ? S.dels : S.mss).find(y => y.id === r.docId);
+          const due = { ...(c.due || {}) }; if (x.due_month != null) due[v] = +x.due_month;
+          const upd = { due, source: src, baseline_cite: x.cite || null };
+          for (const f of ['title', 'lead', 'wp', 'type', 'diss', 'verification']) if (x[f]) upd[f] = x[f];
+          await S.db.collection(coll).doc(r.docId).update(upd);
+        } else {
+          await S.db.collection(coll).doc(`${p.id}__${x.code}`).set({ project: p.id, code: x.code, title: x.title || null, wp: x.wp || null, lead: x.lead || null, type: x.type || null, diss: x.diss || null, verification: x.verification || null, due: { [v]: x.due_month ?? null }, status: coll === 'deliverables' ? 'not_started' : 'planned', forecast_month: null, note: null, source: src, baseline_cite: x.cite || null });
+        }
+      } else if (r.key === 'wps') {
+        pUpd.wps = (d.wps || []).map(w => { const old = (p.wps || []).find(o => o.code === w.code) || {}; return { code: w.code, title: w.title, lead: w.lead || null, start: w.start ?? null, end: w.end ?? null, tasks: (w.tasks || []).map(t => { const ot = (old.tasks || []).find(o => o.code === t.code) || {}; return { code: t.code, title: t.title || ot.title || null, lead: t.lead || null, start: t.start ?? null, end: t.end ?? null, status: ot.status || 'not_started', forecast_start: ot.forecast_start ?? null, forecast_end: ot.forecast_end ?? null, actual_end: ot.actual_end ?? null, note: ot.note || null }; }) }; });
+        if (isNew) pUpd.wps_by_baseline = { ...(p.wps_by_baseline || {}), [curV]: p.wps || [] };
+      } else if (r.key === 'partners') {
+        const fresh = (d.partners || []).map(x => ({ short: x.short || x.name, name: x.name || x.short, country: x.country || null, role: x.role || null, pic: x.pic || null }));
+        if (isNew) {
+          const allV = (p.baselines || []).map(b => b.v);
+          const merged = (p.partners || []).map(x => { const base = { ...x, baselines: x.baselines || allV }; const m = fresh.find(f => norm(f.short) === norm(x.short) || norm(f.name) === norm(x.name)); return m ? { ...base, ...m, baselines: [...new Set([...base.baselines, v])] } : base; });
+          for (const f of fresh) if (!merged.some(x => norm(x.short) === norm(f.short) || norm(x.name) === norm(f.name))) merged.push({ ...f, baselines: [v] });
+          pUpd.partners = merged;
+        } else pUpd.partners = fresh;
+        pUpd.partners_source = src;
+      } else if (r.key === 'kpis') { pUpd.kpis = (d.kpis || []).map((k, i) => ({ id: 'g' + (i + 1), label: k.label, target: typeof k.target === 'number' ? k.target : (parseFloat(k.target) || null), op: '', unit: k.unit || '', so: k.so || null, current: null, cite: k.cite || null })); pUpd.kpi_source = src; }
+      else if (r.key === 'risks') { for (const rk of d.risks || []) await S.db.collection('risks').add({ project: p.id, description: rk.description, likelihood: rk.likelihood || null, impact: rk.impact || null, mitigation: rk.mitigation || null, owner: null, status: 'open', source: src, cite: rk.cite || null, created_at: nowIso(), created_by: S.myId }); }
+    }
+    if (isNew) {
+      for (const c of [...pDels(p.id), ...pMss(p.id)]) if (!rows.some(r => r.docId === c.id)) { const coll = S.dels.includes(c) ? 'deliverables' : 'milestones'; await S.db.collection(coll).doc(c.id).update({ due: { ...(c.due || {}), [v]: (c.due || {})[curV] ?? null } }); }
+      pUpd.baselines = [...(p.baselines || []), { v, label: R.label.trim(), date: R.date || null, note: src }];
+      pUpd.active_baseline = v;
+    }
+    pUpd.updated_at = nowIso(); pUpd.updated_by = S.myId;
+    await S.db.collection('projects').doc(p.id).update(pUpd);
+    await S.db.collection('drafts').doc(d.id).update({ status: 'confirmed', confirmed_as: v, confirmed_by: S.myId, confirmed_at: nowIso(), accepted: rows.map(r => r.key) });
+  }, `Baseline ${v} saved`);
+  if (ok) { log(p.id, `Baseline ${v} confirmed from onboarding: ${rows.length} accepted changes`); S2.review = null; render(); }
+}
+
+// ---------------- suggestions
+const openSugg = (pid) => S.sugg.filter(s => s.status === 'open' && (!pid || s.project === pid)).sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
+const KIND_LABEL = { action: 'Action', status_change: 'Status change', risk: 'New risk', decision: 'Decision' };
+function renderSuggestion(s) {
+  const p = proj(s.project), ed = canEdit();
+  const target = s.kind === 'status_change' ? ` → ${esc(s.target || '?')}: ${esc(DSTATUS[s.new_status] || TSTATUS[s.new_status] || s.new_status || '?')}` : '';
+  return `<div class="uitem"><span class="stripe ${s.kind === 'risk' ? 'red' : s.kind === 'status_change' ? 'amber' : 'blue'}"></span><div style="min-width:0">
+    <div class="t"><span class="badge">${esc(KIND_LABEL[s.kind] || s.kind)}</span> ${esc(s.title)}${target}</div>
+    <div class="s">${esc(p?.acronym || '')}${s.owner ? ' · ' + esc(s.owner) : ''}${s.due ? ' · due ' + fmtDay(s.due) : ''}${s.deliverable ? ' · ' + esc(s.deliverable) : ''}${s.wp ? ' · ' + esc(s.wp) : ''}</div>
+    ${s.cite?.quote ? `<div class="small muted">“${esc(String(s.cite.quote).slice(0, 220))}”${s.cite.loc ? ' · ' + esc(s.cite.loc) : ''} · ${s.cite.url ? `<a href="${esc(s.cite.url)}" target="_blank" rel="noopener">${esc(s.cite.file_title || 'minutes')} ↗</a>` : esc(s.cite.file_title || '')}</div>` : '<div class="small" style="color:var(--amber)">No citation</div>'}
+  </div>${ed ? `<div class="acts"><button class="btn small primary" data-act="sg-accept" data-id="${esc(s.id)}">${s.kind === 'action' ? 'Create task' : s.kind === 'risk' ? 'Add to risks' : s.kind === 'decision' ? 'Record' : 'Apply'}</button><button class="btn small" data-act="sg-edit" data-id="${esc(s.id)}">Edit</button><button class="btn small" data-act="sg-reject" data-id="${esc(s.id)}">Reject</button></div>` : ''}</div>`;
+}
+async function acceptSuggestion(s, edits) {
+  const p = proj(s.project); const x = { ...s, ...(edits || {}) };
+  const source = `Minutes agent: ${s.cite?.file_title || 'minutes'}`;
+  const ok = await write(async () => {
+    let result = null;
+    if (x.kind === 'action') {
+      const partner = x.owner_kind === 'partner' ? ((p.partners || []).find(pp => norm(x.owner).includes(norm(pp.short)))?.short || x.owner) : null;
+      const ref = await S.db.collection('tasks').add({ project: x.project, title: x.title, status: 'todo', owner_kind: x.owner_kind === 'partner' ? 'partner' : 'kmop', owner_user: null, owner_partner: partner, due: /^\d{4}-\d{2}-\d{2}$/.test(x.due || '') ? x.due : null, wp: x.wp || null, deliverable: x.deliverable || null, coordinator_blocker: false, since: null, note: [x.description, x.owner && x.owner_kind !== 'partner' ? `Owner in minutes: ${x.owner}` : ''].filter(Boolean).join('\n') || null, source, cite: x.cite || null, watchers: S.myId ? [S.myId] : [], subtasks: [], links: x.cite?.url ? [{ url: x.cite.url, label: x.cite.file_title || 'Minutes' }] : [], created_by: S.myId, created_at: nowIso(), updated_at: nowIso() });
+      result = { task_id: ref.id };
+    } else if (x.kind === 'status_change') {
+      const code = norm(x.target || x.deliverable), d = pDels(x.project).find(y => norm(y.code) === code), m = pMss(x.project).find(y => norm(y.code) === code);
+      if (d && DSTATUS[x.new_status]) await S.db.collection('deliverables').doc(d.id).update({ status: x.new_status, note: [d.note, `${fmtDay(iso(today()))}: ${source}`].filter(Boolean).join('\n'), updated_at: nowIso(), updated_by: S.myId });
+      else if (m && ['achieved', 'done', 'accepted'].includes(x.new_status)) await S.db.collection('milestones').doc(m.id).update({ status: 'achieved', achieved_month: curM(p), updated_at: nowIso(), updated_by: S.myId });
+      else throw { code: 'no_target', message: `Could not apply: ${x.target || '?'} → ${x.new_status || '?'}. Use Edit to pick the deliverable and status.` };
+    } else if (x.kind === 'risk') {
+      const ref = await S.db.collection('risks').add({ project: x.project, description: x.title + (x.description ? ' — ' + x.description : ''), likelihood: null, impact: null, mitigation: null, owner: x.owner || null, status: 'open', source, cite: x.cite || null, created_at: nowIso(), created_by: S.myId });
+      result = { risk_id: ref.id };
+    }
+    await S.db.collection('suggestions').doc(s.id).update({ status: edits ? 'edited' : 'accepted', decided_by: S.myId, decided_at: nowIso(), result, ...(edits ? { edits } : {}) });
+  }, 'Accepted');
+  if (ok) log(s.project, `Accepted ${KIND_LABEL[x.kind] || x.kind} from the Minutes agent: ${x.title}`);
+}
+function renderSuggEdit() {
+  const s = S.sugg.find(x => x.id === S2.editSugg); if (!s) return '';
+  const p = proj(s.project);
+  return `<div class="scrim" data-act="sg-close"></div><aside class="drawer" role="dialog" aria-label="Edit suggestion"><header><b>Edit before accepting</b><button class="btn small" data-act="sg-close">Close</button></header>
+  <form class="body" id="sg-form" data-id="${esc(s.id)}">
+    <div class="field"><label for="sg-title">Title</label><textarea id="sg-title" rows="2">${esc(s.title)}</textarea></div>
+    <div class="field"><label for="sg-kind">Kind</label><select id="sg-kind">${Object.entries(KIND_LABEL).map(([k, l]) => `<option value="${k}" ${s.kind === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+    <div class="fields2"><div class="field"><label for="sg-owner">Owner (as written)</label><input type="text" id="sg-owner" value="${esc(s.owner || '')}"></div>
+    <div class="field"><label for="sg-okind">Owner is</label><select id="sg-okind"><option value="kmop" ${s.owner_kind === 'kmop' ? 'selected' : ''}>KMOP</option><option value="partner" ${s.owner_kind === 'partner' ? 'selected' : ''}>Partner</option><option value="unknown" ${s.owner_kind === 'unknown' ? 'selected' : ''}>Not stated</option></select></div></div>
+    <div class="fields2"><div class="field"><label for="sg-due">Due</label><input type="date" id="sg-due" value="${esc(/^\d{4}-\d{2}-\d{2}$/.test(s.due || '') ? s.due : '')}"></div>
+    <div class="field"><label for="sg-del">Deliverable / milestone</label><select id="sg-del"><option value="">—</option>${pDels(s.project).map(d => `<option ${norm(s.deliverable || s.target) === norm(d.code) ? 'selected' : ''}>${esc(d.code)}</option>`).join('')}${pMss(s.project).map(m => `<option ${norm(s.target) === norm(m.code) ? 'selected' : ''}>${esc(m.code)}</option>`).join('')}</select></div></div>
+    <div class="field"><label for="sg-status">New status (for status changes)</label><select id="sg-status"><option value="">—</option>${DSTATUS_ORDER.map(k => `<option value="${k}" ${s.new_status === k ? 'selected' : ''}>${DSTATUS[k]}</option>`).join('')}<option value="achieved" ${s.new_status === 'achieved' ? 'selected' : ''}>Milestone achieved</option></select></div>
+    <div class="field"><label for="sg-desc">Description</label><textarea id="sg-desc" rows="3">${esc(s.description || '')}</textarea></div>
+    ${s.cite?.quote ? `<div class="small muted">From the minutes: “${esc(s.cite.quote)}”</div>` : ''}
+    <div class="row"><button class="btn primary" type="submit">Save and accept</button><span class="small muted">${esc(p?.acronym || '')}</span></div>
+  </form></aside>`;
+}
+
+// ---------------- meetings, risks, agent runs
+function renderMeetings(p) {
+  const ms = S.meetings.filter(m => m.project === p.id).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  const sg = openSugg(p.id);
+  const decided = S.sugg.filter(s => s.project === p.id && s.status !== 'open').sort((a, b) => (b.decided_at || '').localeCompare(a.decided_at || ''));
+  const tracked = pTasks(p.id).filter(t => String(t.source || '').startsWith('Minutes') || t.cite).sort(sortTasks);
+  return `<div class="grid2"><div class="stack"><div class="panel"><h3>Suggestions to review · ${sg.length}</h3>${sg.length ? `<div class="urgent">${sg.map(renderSuggestion).join('')}</div>` : '<div class="empty small">No open suggestions. Run the Minutes agent from Documents (Extract actions next to a minutes file).</div>'}</div>
+    <div class="panel"><h3>Action tracker · ${tracked.length}</h3>${tracked.length ? tracked.map(t => `<div class="kpi" data-act="task" data-id="${esc(t.id)}" style="cursor:pointer"><div>${esc(t.title)}<div class="small muted">${esc(ownerLabel(t))} · ${TSTATUS[t.status]}</div></div><div class="mono small">${t.due ? fmtDay(t.due) : ''}</div></div>`).join('') : '<div class="empty small">Actions accepted from minutes appear here. They are also tasks in Work.</div>'}</div></div>
+  <div class="stack"><div class="panel"><h3>Meetings · ${ms.length}</h3>${ms.length ? ms.map(m => `<div class="kpi"><div><b>${esc(m.title)}</b><div class="small muted">${esc(m.type || '')}${m.date ? ' · ' + fmtDay(m.date) : ''} · ${m.suggestion_count ?? 0} suggestions</div></div><div>${m.url ? `<a class="small" href="${esc(m.url)}" target="_blank" rel="noopener">Minutes ↗</a>` : ''}</div></div>`).join('') : '<div class="empty small">No meetings yet. A meeting is added when the Minutes agent reads its minutes.</div>'}</div>
+    ${decided.length ? `<div class="panel"><h3>Decided · ${decided.length}</h3>${decided.slice(0, 30).map(s => `<div class="kpi"><div class="small">${esc(s.title)}</div><div class="small muted">${esc(s.status)} · ${esc(nameOf(s.decided_by))}</div></div>`).join('')}</div>` : ''}</div></div>`;
+}
+function renderRisks(p) {
+  const rs = S.risks.filter(r => r.project === p.id);
+  return `<div class="panel" style="padding:0"><div class="tablewrap"><table><thead><tr><th style="padding-left:16px">Risk</th><th>Likelihood</th><th>Impact</th><th>Mitigation</th><th>Owner</th><th>Source</th></tr></thead><tbody>${rs.length ? rs.map(r => `<tr><td style="padding-left:16px;min-width:240px">${esc(r.description)}</td><td>${esc(r.likelihood || '—')}</td><td>${esc(r.impact || '—')}</td><td class="small">${esc(r.mitigation || '')}</td><td>${esc(r.owner || '')}</td><td class="small muted">${esc(r.source || '')}${r.cite?.quote ? `<div>“${esc(String(r.cite.quote).slice(0, 140))}”</div>` : ''}</td></tr>`).join('') : '<tr><td colspan="6" class="empty">No risks yet. Risks arrive from the DoA risk table (onboarding) and from minutes (Minutes agent).</td></tr>'}</tbody></table></div></div><p class="small muted">Scores, trend, escalation and the heat-map arrive in Phase 3.</p>`;
+}
+function renderRuns(p) {
+  const rs = S.runs.filter(r => r.project === p.id).sort((a, b) => (b.at || '').localeCompare(a.at || '')).slice(0, 30);
+  if (!rs.length) return '';
+  return `<div class="panel" style="margin-top:18px"><h3>Agent runs · ${rs.length}</h3>${rs.map(r => `<div class="kpi"><div>${esc(r.agent === 'onboarding' ? 'Onboarding agent' : 'Minutes agent')} · <span class="status ${r.status === 'done' ? 'done' : r.status === 'failed' ? 'late' : 'doing'}">${esc(r.status)}</span><div class="small muted">${esc((r.files || []).map(f => f.title).join(', '))}${r.counts ? ' · ' + esc(Object.entries(r.counts).map(([k, v]) => `${v} ${k}`).join(', ')) : ''}${r.error ? ' · ' + esc(r.error) : ''}</div></div><div class="small muted">${esc(r.by === 'session' ? 'Claude (setup run)' : nameOf(r.by))} · ${esc((r.at || '').slice(0, 16).replace('T', ' '))}</div></div>`).join('')}</div>`;
+}
+
 // pins: kept per person in their private subtree (falls back to this browser)
 async function togglePin(id) {
   const set = new Set(S.pins); set.has(id) ? set.delete(id) : set.add(id); S.pins = [...set]; render();
@@ -900,7 +1285,8 @@ async function togglePin(id) {
   try { S.pins = JSON.parse(localStorage.getItem('cowork-pins') || '[]'); } catch {}
   render();
   if (!window.claude?.use) { S.noDb = true; render(); return; }
-  const [db, user] = await Promise.all([window.claude.use('db'), window.claude.use('user')]);
+  const [db, user, mcp, sample] = await Promise.all([window.claude.use('db'), window.claude.use('user'), window.claude.use('mcp'), window.claude.use('sample')]);
+  S2.mcp = mcp; S2.sample = sample;
   S.user = user;
   if (user) {
     try {
@@ -915,6 +1301,7 @@ async function togglePin(id) {
   sub('deliverables', 'dels'); sub('milestones', 'mss'); sub('tasks', 'tasks'); sub('conflicts', 'conflicts');
   sub('handled', 'handled'); sub('overrides', 'overrides'); sub('kpi_values', 'kpiv'); sub('members', 'members');
   sub('activity', 'activity', q => q.orderBy('at', 'desc').limit(300));
+  sub('drafts', 'drafts'); sub('suggestions', 'sugg'); sub('meetings', 'meetings'); sub('risks', 'risks'); sub('agent_runs', 'runs', q => q.orderBy('at', 'desc').limit(200));
   if (S.myId) db.doc(`data/users/${S.myId}/prefs`).onSnapshot(s => { if (s.exists && Array.isArray(s.data().pins)) { S.pins = s.data().pins; scheduleRender(); } }, () => {});
 })();
 </script>
