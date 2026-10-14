@@ -207,13 +207,13 @@ const APP_ROLES = { admin: 'Admin', smt: 'Senior management', hou: 'Head of unit
 const TABS = [
   ['overview','Overview'], ['plan','Plan'], ['work','Work'], ['deliverables','Deliverables & milestones'],
   ['meetings','Meetings & actions'], ['kpis','KPIs'], ['risks','Risks'], ['partners','Partners'],
-  ['inbox','Inbox', 4], ['documents','Documents'], ['activity','Activity'],
+  ['inbox','Inbox'], ['documents','Documents'], ['activity','Activity'],
 ];
 
 // ============================================================ state
 const S = {
   db: null, user: null, me: null, myId: null, canWrite: true, isAdmin: false, isOwner: false, noDb: false, ready: {},
-  projects: [], dels: [], mss: [], tasks: [], conflicts: [], handled: [], overrides: [], kpiv: [], members: [], activity: [], drafts: [], sugg: [], meetings: [], risks: [], runs: [], statusReports: [], prefs: null,
+  projects: [], dels: [], mss: [], tasks: [], conflicts: [], handled: [], overrides: [], kpiv: [], members: [], activity: [], drafts: [], sugg: [], meetings: [], risks: [], runs: [], statusReports: [], prefs: null, emails: [], settings: [],
   names: {}, pins: [], prefsVersion: 0,
   route: parseHash(), railOpen: false,
   ui: { q: '', fProg: '', fEnt: '', fPm: '', fRole: '', work: 'list', wOwner: 'all', wStatus: 'open', wWp: '', wq: '', calMonth: null, baseline: {}, dFilter: '', drawer: null, picks: null, confirm: null, mwFilter: 'mine' },
@@ -222,7 +222,7 @@ function parseHash() {
   const h = (location.hash || '').slice(1);
   const m = h.match(/^p\.([a-z0-9-]+)(?:\.([a-z]+))?$/);
   if (m) return { view: 'project', id: m[1], tab: m[2] || 'overview' };
-  if (['mywork','portfolio','teamportfolio','notifications','procedures','reports','team'].includes(h)) return { view: h };
+  if (['mywork','portfolio','teamportfolio','notifications','mailbox','procedures','reports','team'].includes(h)) return { view: h };
   return { view: 'home' };
 }
 function go(route) {
@@ -409,7 +409,7 @@ function roleBadge(p) {
 function renderRail() {
   const r = S.route;
   const role = myRole(), un = S.ready.projects ? unreadCount() : 0;
-  const nav = [['mywork', 'My work'], ...(['hou', 'admin'].includes(role) ? [['teamportfolio', 'Team portfolio']] : []), ...(['smt', 'admin', 'hou'].includes(role) ? [['portfolio', 'Portfolio']] : []), ['notifications', `Notifications${un ? ` <span class="count">${un}</span>` : ''}`], ['procedures', 'Procedures Assistant', 5], ['reports', 'Reports', 6], ['team', 'Team & access']];
+  const nav = [['mywork', 'My work'], ...(['hou', 'admin'].includes(role) ? [['teamportfolio', 'Team portfolio']] : []), ...(['smt', 'admin', 'hou'].includes(role) ? [['portfolio', 'Portfolio']] : []), ['notifications', `Notifications${un ? ` <span class="count">${un}</span>` : ''}`], ['mailbox', 'Mailbox'], ['procedures', 'Procedures Assistant', 5], ['reports', 'Reports', 6], ['team', 'Team & access']];
   const list = railFiltered();
   const pinned = list.filter(p => S.pins.includes(p.id));
   const item = (p) => {
@@ -443,6 +443,7 @@ function renderView() {
   if (r.view === 'portfolio') return renderPortfolio('all');
   if (r.view === 'teamportfolio') return renderPortfolio('team');
   if (r.view === 'notifications') return renderNotifications();
+  if (r.view === 'mailbox') return renderMailbox();
   if (r.view === 'procedures') return later('Procedures Assistant', 5, 'Ask how things are done at KMOP and get an answer with a citation to the internal procedure (Filing Procedure, Events Manual, Brussels Office Procedures Manual, Amendments guidelines, PM handover checklist), plus a browsable FAQ.');
   if (r.view === 'reports') return later('Reports', 6, 'Management report (one page per project), SC meeting agenda drafts and EC progress report narrative drafts, exported to Google Docs or PDF after your approval.');
   if (!S.ready.projects) return '<div class="empty">Loading projects…</div>';
@@ -489,7 +490,8 @@ function renderProject(p, tab) {
     case 'activity': body = renderActivity(p) + renderRuns(p); break;
     case 'meetings': body = renderMeetings(p); break;
     case 'risks': body = renderRisks(p); break;
-    case 'inbox': body = later('Inbox', 4, 'Consortium group emails received at system@kmop.org, linked to this project, with an extract per thread: decisions, deadlines and requests to KMOP.'); break;
+    case 'inbox': body = renderInbox(p); break;
+    case 'inbox-old': body = later('Inbox', 4, 'Consortium group emails received at system@kmop.org, linked to this project, with an extract per thread: decisions, deadlines and requests to KMOP.'); break;
     default: body = renderOverview(p, rg);
   }
   return head + tabs + body;
@@ -835,6 +837,9 @@ document.addEventListener('click', async (e) => {
     case 'sg-accept': { const sg = S.sugg.find(x => x.id === el.dataset.id); el.disabled = true; await acceptSuggestion(sg); break; }
     case 'sg-reject': { const id = el.dataset.id, sg = S.sugg.find(x => x.id === id); const ok = await write(() => S.db.collection('suggestions').doc(id).update({ status: 'rejected', decided_by: S.myId, decided_at: nowIso() }), 'Rejected'); if (ok) log(sg.project, `Rejected suggestion: ${sg.title}`); break; }
     case 'sg-edit': S2.editSugg = el.dataset.id; render(); break;
+    case 'mail-sync': syncMailbox(); break;
+    case 'grp-edit': S4.grpFor = el.dataset.pid; render(); break;
+    case 'open-tab': go({ view: 'project', id: el.dataset.id, tab: el.dataset.tab }); break;
     case 'status-run': runStatus(proj(el.dataset.pid)); break;
     case 'status-edit': S3.editStatus = el.dataset.id; render(); break;
     case 'status-cancel': S3.editStatus = null; render(); break;
@@ -876,6 +881,7 @@ document.addEventListener('submit', async (e) => {
   else if (f.id === 'comment-add') { const ta = document.getElementById('c-text'); const text = ta.value.trim(); if (!text) return; ta.value = ''; ta.blur(); const t = curTask(); const ok = await write(() => S.db.collection(`tasks/${t.id}/comments`).add({ text, by: S.myId, at: nowIso() })); if (ok) log(t.project, `Comment on “${t.title}”`); }
   else if (f.id === 'link-folder') { const url = document.getElementById('folder-url').value.trim(), m = url.match(/folders\/([\w-]+)/); if (!m) { toast('Paste a Google Drive folder link.'); return; } const pid = f.dataset.pid; document.activeElement?.blur(); const ok = await write(() => S.db.collection('projects').doc(pid).update({ drive_url: url, drive_folder_id: m[1] }), 'Folder linked'); if (ok) { delete S2.drive[pid]; log(pid, 'Linked the Drive folder'); } }
   else if (f.id === 'sg-form') { const s = S.sugg.find(x => x.id === f.dataset.id), v = (id) => document.getElementById(id).value.trim(); const sel = v('sg-del'); const edits = { title: v('sg-title') || s.title, kind: v('sg-kind'), owner: v('sg-owner') || null, owner_kind: v('sg-okind'), due: v('sg-due') || null, description: v('sg-desc') || null, new_status: v('sg-status') || null, deliverable: sel && !sel.startsWith('MS') ? sel : null, target: sel || s.target || null }; document.activeElement?.blur(); await acceptSuggestion(s, edits); S2.editSugg = null; render(); }
+  else if (f.id === 'grp-form') { const pid = f.dataset.pid, v = document.getElementById('grp-addr').value.trim().toLowerCase(); if (v && !/^[^@\s]+@[^@\s]+$/.test(v)) { toast('Enter an email address.'); return; } document.activeElement?.blur(); const ok = await write(() => S.db.collection('projects').doc(pid).update({ group_email: v || null }), 'Group address saved'); if (ok) { S4.grpFor = null; log(pid, `Group address set to ${v || 'none'}`); render(); } }
   else if (f.id === 'meet-add') { const pid = f.dataset.pid, v = (i) => document.getElementById(i).value.trim(); const title = v('mt-title'), date = v('mt-date'); if (!title || !date) { toast('Give the meeting a title and a date.'); return; } document.activeElement?.blur(); const ok = await write(() => S.db.collection('meetings').add({ project: pid, title, date, type: v('mt-type'), format: v('mt-format'), planned: true, minutes_url: null, url: null, created_by: S.myId, created_at: nowIso(), suggestion_count: 0 }), 'Meeting added'); if (ok) log(pid, `Added meeting ${title} (${fmtDay(date)})`); }
   else if (f.id === 'mt-min-form') { const id = f.dataset.id, url = document.getElementById('mt-min-url').value.trim(), m = S.meetings.find(x => x.id === id); if (!/^https:\/\//.test(url)) { toast('Paste a Drive link that starts with https://'); return; } document.activeElement?.blur(); const ok = await write(() => S.db.collection('meetings').doc(id).update({ minutes_url: url, url, minutes_added_at: nowIso(), minutes_added_by: S.myId }), 'Minutes link saved'); if (ok) { S3.minutesFor = null; log(m.project, `Minutes added for ${m.title}`); const fid = (url.match(/\/d\/([\w-]+)/) || [])[1]; if (fid && S2.mcp && S2.sample) runMinutes(proj(m.project), { id: fid, title: m.title + ' minutes', url }); render(); } }
   else if (f.id === 'vf-form') { const id = f.dataset.id, url = document.getElementById('vf-url').value.trim(); if (url && !/^https:\/\//.test(url)) { toast('Paste a link that starts with https://'); return; } S.ui.vfFor = null; document.activeElement?.blur(); const d = S.dels.find(x => x.id === id); await patch('deliverables', id, { vf_url: url || null }, `${d.code}: final file link ${url ? 'set' : 'removed'}`, d.project); render(); }
@@ -920,6 +926,7 @@ document.addEventListener('change', async (e) => {
   if (el.dataset.rmode) { S2.review.mode = el.dataset.rmode; render(); return; }
   if (id === 'r-label') { S2.review.label = el.value; return; }
   if (id === 'r-date') { S2.review.date = el.value; return; }
+  if (el.dataset.assign) { const id = el.dataset.assign, v = el.value; if (!v) return; const ok = await write(() => S.db.collection('emails').doc(id).update(v === '__ignore' ? { ignored: true, decided_by: S.myId } : { project: v, mapped_by: 'manual', decided_by: S.myId }), v === '__ignore' ? 'Marked as not project mail' : 'Assigned'); if (ok && v !== '__ignore') log(v, `Assigned an email thread to this project: ${S.emails.find(e => e.id === id)?.subject || ''}`); return; }
   if (id === 'digest-freq') { savePrefs({ digest: el.value }); render(); return; }
   if (el.dataset.punit != null && el.dataset.punit !== '') { const pid = el.dataset.punit; await write(() => S.db.collection('projects').doc(pid).update({ unit: el.value || null }), 'Unit saved'); return; }
   if (el.dataset.mproj) { const [mid, pid] = el.dataset.mproj.split('|'), m = S.members.find(x => x.id === mid), set = new Set(m.projects || []); el.checked ? set.add(pid) : set.delete(pid); await write(() => S.db.collection('members').doc(mid).update({ projects: [...set] })); return; }
@@ -1289,7 +1296,7 @@ function renderSuggEdit() {
 // ---------------- meetings, risks, agent runs
 function renderMeetings(p) {
   const ms = S.meetings.filter(m => m.project === p.id).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
-  const sg = openSugg(p.id);
+  const sg = openSugg(p.id).filter(s => s.agent !== 'email');
   const decided = S.sugg.filter(s => s.project === p.id && s.status !== 'open').sort((a, b) => (b.decided_at || '').localeCompare(a.decided_at || ''));
   const tracked = pTasks(p.id).filter(t => String(t.source || '').startsWith('Minutes') || t.cite).sort(sortTasks);
   return `<div class="grid2"><div class="stack"><div class="panel"><h3>Suggestions to review · ${sg.length}</h3>${sg.length ? `<div class="urgent">${sg.map(renderSuggestion).join('')}</div>` : '<div class="empty small">No open suggestions. Run the Minutes agent from Documents (Extract actions next to a minutes file).</div>'}</div>
@@ -1551,6 +1558,108 @@ function renderMeetingForm(p) {
   return `<div class="panel"><h3>Add a meeting</h3><form id="meet-add" data-pid="${esc(p.id)}" class="field"><div class="fields2"><input type="text" id="mt-title" placeholder="e.g. SC meeting 4" aria-label="Meeting title"><input type="date" id="mt-date" aria-label="Date"></div><div class="fields2"><select id="mt-type" aria-label="Type"><option value="SC">Steering Committee</option><option value="TPM">Transnational partner meeting</option><option value="kick-off">Kick-off</option><option value="training">Training</option><option value="workshop">Workshop</option><option value="conference">Conference / multiplier event</option><option value="other">Other</option></select><select id="mt-format" aria-label="Format"><option>Online</option><option>Face-to-face</option><option>Hybrid</option></select></div><button class="btn primary" type="submit" style="justify-self:start">Add meeting</button><span class="small muted">After the meeting, Co-Work reminds you on day 5 to upload the minutes and escalates on day 8.</span></form></div>`;
 }
 
+// ============================================================ Phase 4: group emails (system@kmop.org), email triage agent, Inbox
+// Stores extracted facts and a link to the thread, never full bodies (GDPR).
+const GMAIL = 'Gmail';
+const S4 = { sync: null, assign: {} };
+const groupOf = (p) => p.group_email || null;
+const acrRe = (p) => new RegExp(String(p.acronym || '').replace(/[^A-Za-z0-9]/g, '').split('').join('[\\s_-]?'), 'i');
+const mailSettings = () => S.settings.find(x => x.id === 'mailbox') || {};
+const ORG_BY_DOMAIN = { 'kmop.org': 'KMOP', 'danilodolci.org': 'CSC Danilo Dolci', 'aldaintranet.org': 'ALDA', 'alda-europe.eu': 'ALDA', 'prom.info.pl': 'PROM', 'headway.gr': 'Headway', 'cyprusyouth.org': 'KOKEN', 'weblyzard.com': 'webLyzard', 'ethoslab.gr': 'Ethos Lab', 'dcu.ie': 'DCU', 'cardet.org': 'CARDET', 'kilkennycarlowetb.ie': 'KCETB', 'emphasyscentre.com': 'Emphasys' };
+const orgOf = (addr) => { const d = String(addr || '').toLowerCase().split('@')[1] || ''; return ORG_BY_DOMAIN[d] || d; };
+function mapThread(t) {
+  const addrs = (t.messages || []).flatMap(m => [m.sender, ...(m.toRecipients || []), ...(m.ccRecipients || [])]).map(a => String(a || '').toLowerCase());
+  for (const p of S.projects) { const g = groupOf(p); if (g && addrs.includes(g.toLowerCase())) return { project: p.id, mapped_by: 'group', group: g }; }
+  const subj = (t.messages || []).map(m => m.subject || '').join(' ');
+  for (const p of S.projects) if (p.acronym && acrRe(p).test(subj)) return { project: p.id, mapped_by: 'subject', group: null };
+  return { project: null, mapped_by: null, group: null };
+}
+function threadText(pl) {
+  const ms = pl?.messages || pl?.thread?.messages || [];
+  return ms.map(m => `--- ${m.date || ''} from ${orgOf(m.sender)} (${m.sender || ''})\nSubject: ${m.subject || ''}\n${(m.plaintextBody || m.plaintext_body || m.snippet || '').slice(0, 8000)}`).join('\n\n').slice(0, 60000);
+}
+const TRIAGE_FORMAT = `{"summary": "1-3 sentences", "decisions": [string], "deadlines": [{"what", "date": "YYYY-MM-DD" or null, "owner"}], "requests_to_kmop": [{"what", "due": "YYYY-MM-DD" or null, "from_org"}], "attachments": [{"name", "suggest_folder"}], "finance": true|false,
+ "suggestions": [{"kind": "action"|"decision"|"status_change"|"risk", "title": "short imperative", "description", "owner", "owner_kind": "kmop"|"partner"|"unknown", "due": "YYYY-MM-DD" or null, "wp", "deliverable", "target", "new_status", "quote": "verbatim, at most 200 characters, no personal data"}]}`;
+async function triageThread(t, map, p) {
+  const full = await S2.mcp.callTool(GMAIL, 'get_thread', { threadId: t.id, messageFormat: 'PLAIN_TEXT' }, { cache: false });
+  const text = threadText(full.payload ?? full);
+  const prompt = `You are the Email triage agent of KMOP Co-Work. Read this consortium email thread${p ? ` of the EU project ${p.acronym} (KMOP role ${p.role}; deliverables ${pDels(p.id).map(d => d.code).join(', ')}; partners ${(p.partners || []).map(x => x.short).join(', ')})` : ''} and extract facts for the project manager.
+Rules: only what the emails say; never guess owners or dates; dates as YYYY-MM-DD. Do NOT copy bank details, amounts of money, phone numbers, addresses or other personal data — for a finance matter write "Finance matter, see the thread". Use organisation names, not personal email addresses.
+Reply with ONLY one JSON object: ${TRIAGE_FORMAT}
+
+${text}`;
+  const out = await S2.sample.json(prompt, { modelTier: 'default', cache: false });
+  const last = (t.messages || []).slice(-1)[0] || {}, first = (t.messages || [])[0] || {};
+  const doc = { project: map.project, mapped_by: map.mapped_by, group: map.group, thread_id: t.id, subject: first.subject || last.subject || out?.subject || '(no subject)', first_date: first.date || null, last_date: last.date || null, message_count: t.messageCount || (t.messages || []).length, view_url: t.viewUrl || null,
+    from_orgs: [...new Set((t.messages || []).map(m => orgOf(m.sender)))], extract: { summary: out?.summary || '', decisions: out?.decisions || [], deadlines: out?.deadlines || [], requests_to_kmop: out?.requests_to_kmop || [], attachments: out?.attachments || [] }, finance: !!out?.finance, status: 'triaged', extracted_by: S.myId, extracted_at: nowIso() };
+  await S.db.collection('emails').doc(t.id).set(doc);
+  if (map.project) for (const { quote, ...s } of (out?.suggestions || []).slice(0, 20)) await S.db.collection('suggestions').add({ ...s, project: map.project, agent: 'email', thread_id: t.id, status: 'open', created_at: nowIso(), cite: { file_title: doc.subject, url: doc.view_url, loc: `email of ${(last.date || '').slice(0, 10)}`, quote: quote || '' } });
+  return doc;
+}
+async function syncMailbox() {
+  if (!S2.mcp || !S2.sample) { toast('Gmail and Claude must both be available to sync.'); return; }
+  const st = S4.sync = { busy: true, msg: 'Searching the mailbox…', done: 0, total: 0 }; render();
+  const runRef = S.db.collection('agent_runs').doc();
+  try {
+    await runRef.set({ agent: 'email', project: null, by: S.myId, at: nowIso(), status: 'running' });
+    const groups = S.projects.map(groupOf).filter(Boolean), acrs = S.projects.map(p => p.acronym).filter(Boolean);
+    const since = mailSettings().last_sync_at ? ` after:${mailSettings().last_sync_at.slice(0, 10).replace(/-/g, '/')}` : ' newer_than:60d';
+    const query = `(${[...groups.flatMap(g => [`to:${g}`, `cc:${g}`, `from:${g}`]), ...acrs.map(a => `subject:"${a}"`)].join(' OR ')})${since}`;
+    let threads = [], token = null, account = null;
+    do { const r = await S2.mcp.callTool(GMAIL, 'search_threads', { query, pageSize: 50, view: 'THREAD_VIEW_MINIMAL', ...(token ? { pageToken: token } : {}) }, { cache: false }); const pl = r.payload ?? r; threads.push(...(pl.threads || [])); token = pl.nextPageToken || null; } while (token && threads.length < 200);
+    account = (threads[0]?.viewUrl || '').match(/authuser=([^#&]+)/)?.[1] || null;
+    const known = new Map(S.emails.map(e => [e.thread_id, e]));
+    const todo = threads.filter(t => !known.has(t.id) || (known.get(t.id).message_count || 0) < (t.messageCount || 0));
+    st.total = todo.length; st.msg = todo.length ? `Triaging ${todo.length} new or updated thread${todo.length > 1 ? 's' : ''}…` : 'No new emails.'; render();
+    let unmapped = 0;
+    for (const t of todo) {
+      const prev = known.get(t.id), map = prev?.mapped_by === 'manual' ? { project: prev.project, mapped_by: 'manual', group: prev.group } : mapThread(t);
+      if (!map.project) unmapped++;
+      try { await triageThread(t, map, map.project ? proj(map.project) : null); } catch (e) { console.warn('triage', t.id, e?.code); }
+      st.done++; st.msg = `Triaged ${st.done} of ${st.total}…`; scheduleRender();
+    }
+    await S.db.collection('settings').doc('mailbox').set({ last_sync_at: nowIso(), last_sync_by: S.myId, account, threads_seen: threads.length });
+    await runRef.update({ status: 'done', finished_at: nowIso(), counts: { threads: threads.length, triaged: st.done, unmapped }, files: [{ id: 'mailbox', title: account || 'mailbox' }] });
+    st.busy = false; st.msg = `Done: ${threads.length} matching threads, ${st.done} triaged${unmapped ? `, ${unmapped} could not be matched to a project` : ''}.`;
+    if (account && account.toLowerCase() !== 'system@kmop.org') st.msg += ` Note: this read ${account}, not system@kmop.org.`;
+  } catch (e) { st.busy = false; st.msg = MCP_CODES.includes(e?.code) ? mcpErrorText(e).replace(/Google Drive/g, 'Gmail') : sampleErrorText(e); runRef.update({ status: 'failed', finished_at: nowIso(), error: String(e?.code || 'error') }).catch(() => {}); }
+  render();
+}
+function renderEmail(e, withProject) {
+  const x = e.extract || {}, p = proj(e.project);
+  return `<div class="panel"><h3 style="text-transform:none;letter-spacing:0;font-size:14px;color:var(--ink)"><span>${withProject && p ? `<b>${esc(p.acronym)}</b> · ` : ''}${esc(e.subject)}</span><span class="small muted mono">${esc((e.last_date || '').slice(0, 10))}</span></h3>
+    <div class="small muted" style="margin-bottom:6px">${e.message_count || 1} message${(e.message_count || 1) > 1 ? 's' : ''} · ${esc((e.from_orgs || []).join(', '))}${e.mapped_by ? ` · matched by ${esc(e.mapped_by === 'group' ? 'group address' : e.mapped_by)}` : ''}${e.finance ? ' · <span class="badge">finance</span>' : ''} · ${e.view_url ? `<a href="${esc(e.view_url)}" target="_blank" rel="noopener">Open in Gmail ↗</a>` : ''}</div>
+    ${x.summary ? `<p style="margin:0 0 6px">${esc(x.summary)}</p>` : ''}
+    ${(x.requests_to_kmop || []).length ? `<div class="small"><b>Requests to KMOP</b><ul class="list">${x.requests_to_kmop.map(r => `<li>${esc(r.what)}${r.due ? ` · <span class="mono">${fmtDay(r.due)}</span>` : ''}${r.from_org ? ` · ${esc(r.from_org)}` : ''}</li>`).join('')}</ul></div>` : ''}
+    ${(x.deadlines || []).length ? `<div class="small"><b>Deadlines</b><ul class="list">${x.deadlines.map(r => `<li>${esc(r.what)}${r.date ? ` · <span class="mono">${fmtDay(r.date)}</span>` : ''}${r.owner ? ` · ${esc(r.owner)}` : ''}</li>`).join('')}</ul></div>` : ''}
+    ${(x.decisions || []).length ? `<div class="small"><b>Decisions</b><ul class="list">${x.decisions.map(d => `<li>${esc(d)}</li>`).join('')}</ul></div>` : ''}
+    ${(x.attachments || []).length ? `<div class="small"><b>Attachments to file</b><ul class="list">${x.attachments.map(a => `<li>${esc(a.name)}${a.suggest_folder ? ` → ${esc(a.suggest_folder)}` : ''}</li>`).join('')}</ul></div>` : ''}
+  </div>`;
+}
+function renderInbox(p) {
+  const es = S.emails.filter(e => e.project === p.id).sort((a, b) => (b.last_date || '').localeCompare(a.last_date || ''));
+  const sg = openSugg(p.id).filter(s => s.agent === 'email');
+  const reqs = es.flatMap(e => (e.extract?.requests_to_kmop || []).map(r => ({ ...r, e }))).sort((a, b) => (a.due || '9999').localeCompare(b.due || '9999'));
+  const ed = canEdit();
+  return `<div class="toolbar"><span class="small muted">Group address: <b class="mono">${esc(groupOf(p) || 'not set')}</b>${S.isAdmin ? ` <button class="btn small" data-act="grp-edit" data-pid="${esc(p.id)}">Change</button>` : ''} · Emails are matched by this address, then by “${esc(p.acronym)}” in the subject.</span><span class="grow"></span>${mailSettings().last_sync_at ? `<span class="small muted">Last sync ${esc(mailSettings().last_sync_at.slice(0, 16).replace('T', ' '))}</span>` : ''}<button class="btn small" data-act="nav" data-view="mailbox">Mailbox</button></div>
+  ${S4.grpFor === p.id ? `<form id="grp-form" data-pid="${esc(p.id)}" class="row" style="margin-bottom:12px"><input type="text" id="grp-addr" value="${esc(groupOf(p) || '')}" placeholder="project-group@kmop.org" style="flex:1"><button class="btn small primary" type="submit">Save</button></form>` : ''}
+  <div class="grid2"><div class="stack">${es.length ? es.map(e => renderEmail(e)).join('') : '<div class="empty">No emails for this project yet. They arrive when the mailbox is synced (Mailbox page).</div>'}</div>
+  <div class="stack"><div class="panel"><h3>Requests to KMOP · ${reqs.length}</h3>${reqs.length ? reqs.map(r => `<div class="kpi"><div class="small">${esc(r.what)}<div class="muted">${esc(r.from_org || '')} · ${esc(r.e.subject)}</div></div><div class="mono small" style="${r.due && parseDay(r.due) < today() ? 'color:var(--red)' : ''}">${r.due ? fmtDay(r.due) : ''}</div></div>`).join('') : '<div class="empty small">None found.</div>'}</div>
+  <div class="panel"><h3>Suggestions from emails · ${sg.length}</h3>${sg.length ? `<div class="urgent">${sg.map(renderSuggestion).join('')}</div>` : '<div class="empty small">No open suggestions from emails.</div>'}</div></div></div>`;
+}
+function renderMailbox() {
+  const st = S4.sync, ms = mailSettings(), un = S.emails.filter(e => !e.project && !e.ignored).sort((a, b) => (b.last_date || '').localeCompare(a.last_date || ''));
+  const counts = S.projects.map(p => [p, S.emails.filter(e => e.project === p.id).length]);
+  return `<div class="phead"><h1>Mailbox</h1><div class="muted">Consortium group emails received at <b>system@kmop.org</b>. Co-Work keeps the extracted facts and a link to each thread, not the email text.</div></div>
+  <div class="grid2"><div class="stack"><div class="panel"><h3>Sync</h3>
+    <p class="small">Sync reads the Gmail account connected to <i>your</i> Claude, so run it while signed in to the Gmail connector as <b>system@kmop.org</b>. It looks for mail to or from each project's group address, or with the acronym in the subject, since the last sync. Each new or updated thread goes to the Email triage agent.</p>
+    <div class="small muted" style="margin-bottom:8px">${ms.last_sync_at ? `Last sync ${esc(ms.last_sync_at.slice(0, 16).replace('T', ' '))} by ${esc(ms.last_sync_by === 'session' ? 'Claude (setup run)' : nameOf(ms.last_sync_by))}${ms.account ? ` · mailbox ${esc(ms.account)}` : ''}` : 'Never synced.'}</div>
+    ${st ? `<div class="notice small" style="margin-bottom:8px">${esc(st.msg)}</div>` : ''}
+    ${canEdit() ? `<button class="btn primary" data-act="mail-sync" ${st?.busy || !S2.mcp || !S2.sample ? 'disabled' : ''}>Sync now</button>${!S2.mcp ? '<p class="small muted">Gmail is not available in this view.</p>' : ''}` : ''}</div>
+    <div class="panel"><h3>By project</h3>${counts.map(([p, n]) => `<div class="kpi"><div><b>${esc(p.acronym)}</b> <span class="small muted mono">${esc(groupOf(p) || 'no group address')}</span></div><button class="btn small" data-act="open-tab" data-id="${esc(p.id)}" data-tab="inbox">${n} threads</button></div>`).join('')}</div></div>
+  <div class="stack"><div class="panel"><h3>Not matched to a project · ${un.length}</h3>${un.length ? un.map(e => `<div class="kpi"><div class="small"><b>${esc(e.subject)}</b><div class="muted">${esc((e.last_date || '').slice(0, 10))} · ${esc((e.from_orgs || []).join(', '))}${e.view_url ? ` · <a href="${esc(e.view_url)}" target="_blank" rel="noopener">Gmail ↗</a>` : ''}</div>${e.extract?.summary ? `<div>${esc(e.extract.summary)}</div>` : ''}</div>${canEdit() ? `<select data-assign="${esc(e.id)}" aria-label="Assign to project"><option value="">Assign to…</option>${S.projects.map(p => `<option value="${esc(p.id)}">${esc(p.acronym)}</option>`).join('')}<option value="__ignore">Not project mail</option></select>` : ''}</div>`).join('') : '<div class="empty small">Every synced thread was matched to a project.</div>'}</div></div></div>`;
+}
+
 // pins: kept per person in their private subtree (falls back to this browser)
 async function togglePin(id) {
   const set = new Set(S.pins); set.has(id) ? set.delete(id) : set.add(id); S.pins = [...set]; render();
@@ -1581,6 +1690,6 @@ async function togglePin(id) {
   sub('activity', 'activity', q => q.orderBy('at', 'desc').limit(300));
   sub('drafts', 'drafts'); sub('suggestions', 'sugg'); sub('meetings', 'meetings'); sub('risks', 'risks'); sub('agent_runs', 'runs', q => q.orderBy('at', 'desc').limit(200));
   if (S.myId) db.doc(`data/users/${S.myId}/prefs`).onSnapshot(s => { if (s.exists) { S.prefs = { ...s.data() }; if (Array.isArray(S.prefs.pins)) S.pins = S.prefs.pins; scheduleRender(); } }, () => {});
-  sub('status_reports', 'statusReports');
+  sub('status_reports', 'statusReports'); sub('emails', 'emails'); sub('settings', 'settings');
 })();
 </script>
