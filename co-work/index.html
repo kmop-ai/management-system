@@ -822,6 +822,7 @@ document.addEventListener('click', async (e) => {
     case 'sg-accept': { const sg = S.sugg.find(x => x.id === el.dataset.id); el.disabled = true; await acceptSuggestion(sg); break; }
     case 'sg-reject': { const id = el.dataset.id, sg = S.sugg.find(x => x.id === id); const ok = await write(() => S.db.collection('suggestions').doc(id).update({ status: 'rejected', decided_by: S.myId, decided_at: nowIso() }), 'Rejected'); if (ok) log(sg.project, `Rejected suggestion: ${sg.title}`); break; }
     case 'sg-edit': S2.editSugg = el.dataset.id; render(); break;
+    case 'sg-dismiss': { const mid = el.dataset.mid, list = S.sugg.filter(x => x.status === 'open' && x.meeting_id === mid); el.disabled = true; const ok = await write(async () => { for (const x of list) await S.db.collection('suggestions').doc(x.id).update({ status: 'dismissed', decided_by: S.myId, decided_at: nowIso() }); }, `Dismissed ${list.length} suggestions`); if (ok && list.length) log(list[0].project, `Dismissed ${list.length} suggestions from ${S.meetings.find(m => m.id === mid)?.title || 'a meeting'}`); break; }
     case 'sg-close': S2.editSugg = null; render(); break;
     case 'mdel': { const id = el.dataset.id; await write(() => S.db.collection('members').doc(id).delete(), 'Role removed'); break; }
   }
@@ -1109,8 +1110,8 @@ function itemDiffs(p, c, x, v, fields) {
 function diffDraft(p, d) {
   const v = p.active_baseline || 'v1', rows = [];
   const F = d.fields || {};
-  const cur = { acronym: p.acronym, title: p.title, grant_no: p.grant_no, call: p.call, type_of_action: p.type_of_action, funding_model: p.funding_model, authority: p.authority, start_month: p.start_month, duration: p.duration };
-  for (const k of Object.keys(cur)) { const nv = valOf(F[k]); if (nv == null || nv === '') continue; rows.push({ sec: 'Project', key: 'f:' + k, label: k.replace(/_/g, ' '), cur: cur[k], next: nv, state: cur[k] == null ? 'new' : norm(cur[k]) === norm(nv) ? 'same' : 'changed', cite: citeOf(F[k]) }); }
+  const cur = { acronym: p.acronym, title: p.title, grant_no: p.grant_no, call: p.call, type_of_action: p.type_of_action, funding_model: p.funding_model, authority: p.authority, start_month: p.start_month, duration: p.duration, pm: p.pm, fm: p.fm, total_budget: p.total_budget, eu_contribution: p.eu_contribution, kmop_share: p.kmop_share };
+  for (const k of Object.keys(cur)) { let nv = valOf(F[k]); if (nv == null || nv === '') continue; if (typeof nv === 'object') nv = JSON.stringify(nv); rows.push({ sec: 'Project', key: 'f:' + k, label: k.replace(/_/g, ' '), cur: cur[k], next: nv, state: cur[k] == null ? 'new' : norm(cur[k]) === norm(nv) ? 'same' : 'changed', cite: citeOf(F[k]) }); }
   const sections = [['Deliverables', 'd', pDels(p.id), d.deliverables || [], ['title', 'wp', 'lead', 'due', 'type', 'dissemination']], ['Milestones', 'm', pMss(p.id), d.milestones || [], ['title', 'wp', 'due', 'verification']]];
   for (const [sec, pre, list, next, fields] of sections) {
     for (const x of next) {
@@ -1161,7 +1162,7 @@ async function confirmReview() {
   const ok = await write(async () => {
     const pUpd = {};
     for (const r of rows) {
-      if (r.key.startsWith('f:')) pUpd[r.key.slice(2)] = r.key === 'f:duration' ? +r.next : r.next;
+      if (r.key.startsWith('f:')) { const k = r.key.slice(2), raw = valOf((d.fields || {})[k]); pUpd[k] = k === 'duration' ? +raw : raw; }
       else if (/^[dm]:/.test(r.key)) {
         const coll = r.key[0] === 'd' ? 'deliverables' : 'milestones', x = r.item;
         if (r.docId) {
@@ -1208,7 +1209,7 @@ function renderSuggestion(s) {
   const target = s.kind === 'status_change' ? ` → ${esc(s.target || '?')}: ${esc(DSTATUS[s.new_status] || TSTATUS[s.new_status] || s.new_status || '?')}` : '';
   return `<div class="uitem"><span class="stripe ${s.kind === 'risk' ? 'red' : s.kind === 'status_change' ? 'amber' : 'blue'}"></span><div style="min-width:0">
     <div class="t"><span class="badge">${esc(KIND_LABEL[s.kind] || s.kind)}</span> ${esc(s.title)}${target}</div>
-    <div class="s">${esc(p?.acronym || '')}${s.owner ? ' · ' + esc(s.owner) : ''}${s.due ? ' · due ' + fmtDay(s.due) : ''}${s.deliverable ? ' · ' + esc(s.deliverable) : ''}${s.wp ? ' · ' + esc(s.wp) : ''}</div>
+    <div class="s">${esc(p?.acronym || '')}${s.meeting_id ? ' · ' + esc((S.meetings.find(m => m.id === s.meeting_id) || {}).title || '') : ''}${s.owner ? ' · ' + esc(s.owner) : ''}${s.due ? ' · due ' + fmtDay(s.due) : ''}${s.deliverable ? ' · ' + esc(s.deliverable) : ''}${s.wp ? ' · ' + esc(s.wp) : ''}</div>
     ${s.cite?.quote ? `<div class="small muted">“${esc(String(s.cite.quote).slice(0, 220))}”${s.cite.loc ? ' · ' + esc(s.cite.loc) : ''} · ${s.cite.url ? `<a href="${esc(s.cite.url)}" target="_blank" rel="noopener">${esc(s.cite.file_title || 'minutes')} ↗</a>` : esc(s.cite.file_title || '')}</div>` : '<div class="small" style="color:var(--amber)">No citation</div>'}
   </div>${ed ? `<div class="acts"><button class="btn small primary" data-act="sg-accept" data-id="${esc(s.id)}">${s.kind === 'action' ? 'Create task' : s.kind === 'risk' ? 'Add to risks' : s.kind === 'decision' ? 'Record' : 'Apply'}</button><button class="btn small" data-act="sg-edit" data-id="${esc(s.id)}">Edit</button><button class="btn small" data-act="sg-reject" data-id="${esc(s.id)}">Reject</button></div>` : ''}</div>`;
 }
@@ -1260,7 +1261,7 @@ function renderMeetings(p) {
   const tracked = pTasks(p.id).filter(t => String(t.source || '').startsWith('Minutes') || t.cite).sort(sortTasks);
   return `<div class="grid2"><div class="stack"><div class="panel"><h3>Suggestions to review · ${sg.length}</h3>${sg.length ? `<div class="urgent">${sg.map(renderSuggestion).join('')}</div>` : '<div class="empty small">No open suggestions. Run the Minutes agent from Documents (Extract actions next to a minutes file).</div>'}</div>
     <div class="panel"><h3>Action tracker · ${tracked.length}</h3>${tracked.length ? tracked.map(t => `<div class="kpi" data-act="task" data-id="${esc(t.id)}" style="cursor:pointer"><div>${esc(t.title)}<div class="small muted">${esc(ownerLabel(t))} · ${TSTATUS[t.status]}</div></div><div class="mono small">${t.due ? fmtDay(t.due) : ''}</div></div>`).join('') : '<div class="empty small">Actions accepted from minutes appear here. They are also tasks in Work.</div>'}</div></div>
-  <div class="stack"><div class="panel"><h3>Meetings · ${ms.length}</h3>${ms.length ? ms.map(m => `<div class="kpi"><div><b>${esc(m.title)}</b><div class="small muted">${esc(m.type || '')}${m.date ? ' · ' + fmtDay(m.date) : ''} · ${m.suggestion_count ?? 0} suggestions</div></div><div>${m.url ? `<a class="small" href="${esc(m.url)}" target="_blank" rel="noopener">Minutes ↗</a>` : ''}</div></div>`).join('') : '<div class="empty small">No meetings yet. A meeting is added when the Minutes agent reads its minutes.</div>'}</div>
+  <div class="stack"><div class="panel"><h3>Meetings · ${ms.length}</h3>${ms.length ? ms.map(m => { const op = sg.filter(x => x.meeting_id === m.id).length; return `<div class="kpi"><div><b>${esc(m.title)}</b><div class="small muted">${esc(m.type || '')}${m.date ? ' · ' + fmtDay(m.date) : ''} · ${m.suggestion_count ?? 0} suggestions, ${op} open</div></div><div class="row">${m.url ? `<a class="small" href="${esc(m.url)}" target="_blank" rel="noopener">Minutes ↗</a>` : ''}${op && canEdit() ? `<button class="btn small" data-act="sg-dismiss" data-mid="${esc(m.id)}">Dismiss ${op} open</button>` : ''}</div></div>`; }).join('') : '<div class="empty small">No meetings yet. A meeting is added when the Minutes agent reads its minutes.</div>'}</div>
     ${decided.length ? `<div class="panel"><h3>Decided · ${decided.length}</h3>${decided.slice(0, 30).map(s => `<div class="kpi"><div class="small">${esc(s.title)}</div><div class="small muted">${esc(s.status)} · ${esc(nameOf(s.decided_by))}</div></div>`).join('')}</div>` : ''}</div></div>`;
 }
 function renderRisks(p) {
